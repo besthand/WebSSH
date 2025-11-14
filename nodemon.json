@@ -1,0 +1,11 @@
+{
+  "watch": [
+    "server.js",
+    "public",
+    "package.json"
+  ],
+  "ignore": [
+    "connections.json"
+  ],
+  "ext": "js,json,html,css"
+}

@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WebSSH Manager</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/core@1.0.0-beta20/dist/css/tabler.min.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm/css/xterm.css" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body class="layout-fluid theme-dark">
+    <div class="page">
+      <header class="navbar navbar-expand-md d-print-none">
+        <div class="container-xl">
+          <h1 class="navbar-brand navbar-brand-autodark d-none-navbar-horizontal pe-0 pe-md-3">
+            <span class="navbar-brand-text">WebSSH 控制台</span>
+          </h1>
+        </div>
+      </header>
+      <div class="page-wrapper">
+        <div class="page-body">
+          <div class="container-xl">
+            <div id="global-alert" class="alert d-none" role="alert"></div>
+
+            <div id="view-connections" class="card view-card">
+              <div class="card-header d-flex justify-content-between align-items-center">
+                <h2 class="card-title">連線清單</h2>
+                <div class="btn-list">
+                  <button class="btn btn-outline-secondary" id="refresh-connections-btn">
+                    <i class="ti ti-refresh"></i>
+                    重新整理
+                  </button>
+                  <button class="btn btn-primary" id="add-connection-btn">
+                    <i class="ti ti-plus"></i>
+                    新增連線
+                  </button>
+                </div>
+              </div>
+              <div class="card-body">
+                <div class="table-responsive">
+                  <table class="table table-vcenter">
+                    <thead>
+                      <tr>
+                        <th>名稱</th>
+                        <th>Host</th>
+                        <th>Port</th>
+                        <th>使用者</th>
+                        <th>驗證方式</th>
+                        <th class="w-1"></th>
+                      </tr>
+                    </thead>
+                    <tbody id="connection-table-body">
+                      <tr>
+                        <td colspan="6" class="text-center text-muted">尚無資料</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div
+                  id="active-session-banner"
+                  class="alert alert-warning d-flex align-items-center justify-content-between d-none mt-3"
+                >
+                  <div>
+                    <div class="fw-bold">
+                      目前有連線進行中：<span id="active-session-name"></span>
+                    </div>
+                    <div class="text-muted small" id="active-session-host"></div>
+                  </div>
+                  <div class="btn-list">
+                    <button class="btn btn-warning" id="resume-session-btn">
+                      <i class="ti ti-terminal-2"></i>
+                      回到連線
+                    </button>
+                    <button class="btn btn-outline-light" id="disconnect-session-btn">
+                      <i class="ti ti-plug-off"></i>
+                      中斷連線
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div id="view-editor" class="card view-card d-none">
+              <div class="card-header">
+                <h2 class="card-title" id="editor-title">新增連線</h2>
+              </div>
+              <div class="card-body">
+                <form id="connection-form" class="connection-form">
+                  <input type="hidden" name="id" />
+                  <div class="row g-3">
+                    <div class="col-md-6">
+                      <label class="form-label">連線名稱</label>
+                      <input class="form-control" name="name" required />
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label">Host</label>
+                      <input class="form-control" name="host" required placeholder="example.com" />
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Port</label>
+                      <input type="number" class="form-control" name="port" min="1" max="65535" value="22" />
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">使用者帳號</label>
+                      <input class="form-control" name="username" required />
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">驗證方式</label>
+                      <select class="form-select" name="authType">
+                        <option value="password">密碼</option>
+                        <option value="certificate">憑證 (私鑰)</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div class="card mt-4" id="saved-key-card">
+                    <div class="card-header">
+                      <h3 class="card-title">私鑰內容 (可選)</h3>
+                    </div>
+                    <div class="card-body">
+                      <div class="mb-3 d-flex align-items-center justify-content-between">
+                        <div id="saved-key-status" class="badge bg-success d-none">已儲存私鑰</div>
+                        <button type="button" class="btn btn-outline-danger btn-sm d-none" id="clear-stored-key-btn">
+                          清除已儲存私鑰
+                        </button>
+                      </div>
+                      <div class="mb-3">
+                        <label class="form-label">貼上私鑰 (PEM / PPK)</label>
+                        <textarea class="form-control" rows="6" name="storedPrivateKey" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
+                        <small class="form-hint">儲存後編輯會自動帶入，不需在連線時再次選檔。</small>
+                      </div>
+                      <div class="mb-3">
+                        <label class="form-label">或上傳私鑰檔案</label>
+                        <input type="file" class="form-control" name="privateKeyFile" accept=".pem,.key,.txt,.ppk,.p8" />
+                        <small class="form-hint">選擇檔案後會轉成文字儲存於設定中。</small>
+                      </div>
+                      <div class="mb-3">
+                        <label class="form-label">私鑰 passphrase</label>
+                        <input type="password" class="form-control" name="storagePassphrase" placeholder="輸入用於私鑰的 passphrase" />
+                        <small class="form-hint">
+                          儲存私鑰前會先以此 passphrase 測試並加密儲存；若留空則不會儲存，連線時需重新選擇私鑰檔。
+                        </small>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="form-footer mt-4">
+                    <div class="btn-list">
+                      <button type="submit" class="btn btn-primary">
+                        <i class="ti ti-device-floppy"></i>
+                        儲存
+                      </button>
+                      <button type="button" class="btn btn-outline-secondary" id="cancel-edit-btn">
+                        <i class="ti ti-arrow-left"></i>
+                        返回清單
+                      </button>
+                    </div>
+                  </div>
+                </form>
+              </div>
+            </div>
+
+            <div id="view-terminal" class="card view-card terminal-card d-none">
+              <div class="terminal-toolbar">
+                <button class="btn btn-icon" id="back-to-list-btn" title="返回連線清單">
+                  <i class="ti ti-arrow-left"></i>
+                </button>
+                <div class="terminal-title">
+                  <h3 id="terminal-connection-name" class="mb-0 text-white"></h3>
+                  <small id="terminal-connection-host" class="text-white-50"></small>
+                </div>
+                <button class="btn btn-icon ms-auto" id="terminal-fullscreen-btn" title="切換全螢幕">
+                  <i class="ti ti-arrows-maximize"></i>
+                </button>
+              </div>
+              <div class="terminal-wrapper">
+                <div id="terminal"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="context-menu" class="context-menu d-none">
+      <button type="button" data-action="delete">
+        <i class="ti ti-trash"></i>
+        刪除此連線
+      </button>
+    </div>
+
+    <div class="modal modal-blur fade" id="credential-modal" tabindex="-1" role="dialog" aria-hidden="true">
+      <div class="modal-dialog modal-lg modal-dialog-centered" role="document">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h3 class="modal-title">輸入驗證資訊</h3>
+            <button type="button" class="btn-close" id="close-credential-modal"></button>
+          </div>
+          <div class="modal-body">
+            <form id="credential-form">
+              <div class="mb-3 credential-password-field">
+                <label class="form-label">密碼</label>
+                <input type="password" class="form-control" name="password" />
+              </div>
+              <div class="credential-certificate-field">
+                <div class="certificate-key-inputs">
+                  <div class="mb-3">
+                    <label class="form-label">貼上私鑰 (PEM / PPK)</label>
+                    <textarea class="form-control" name="privateKeyText" rows="5"></textarea>
+                  </div>
+                  <div class="mb-3">
+                    <label class="form-label">或上傳私鑰檔案</label>
+                    <input type="file" class="form-control" name="privateKeyFile" accept=".pem,.key,.txt,.ppk,.p8" />
+                  </div>
+                </div>
+                <div class="mb-3">
+                  <label class="form-label">Passphrase (如有)</label>
+                  <input type="password" class="form-control" name="passphrase" />
+                  <small class="form-hint text-muted">
+                    若此連線已儲存私鑰，只需輸入 passphrase 即可使用；否則請提供私鑰內容或檔案。
+                  </small>
+                </div>
+              </div>
+              <div class="text-end">
+                <button type="submit" class="btn btn-primary">
+                  <i class="ti ti-plug-connected"></i>
+                  開始連線
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@tabler/core@1.0.0-beta20/dist/js/tabler.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/argon2-browser/dist/argon2.min.js" data-argon2></script>
+    <script src="https://cdn.jsdelivr.net/npm/socket.io/client-dist/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit/lib/xterm-addon-fit.js"></script>
+    <script type="module" src="./script.js"></script>
+  </body>
+</html>
