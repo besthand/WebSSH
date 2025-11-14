@@ -57,26 +57,11 @@
                     </tbody>
                   </table>
                 </div>
-                <div
-                  id="active-session-banner"
-                  class="alert alert-warning d-flex align-items-center justify-content-between d-none mt-3"
-                >
-                  <div>
-                    <div class="fw-bold">
-                      目前有連線進行中：<span id="active-session-name"></span>
-                    </div>
-                    <div class="text-muted small" id="active-session-host"></div>
+                <div id="active-sessions-card" class="card mt-3 d-none">
+                  <div class="card-header">
+                    <h3 class="card-title">進行中的連線</h3>
                   </div>
-                  <div class="btn-list">
-                    <button class="btn btn-warning" id="resume-session-btn">
-                      <i class="ti ti-terminal-2"></i>
-                      回到連線
-                    </button>
-                    <button class="btn btn-outline-light" id="disconnect-session-btn">
-                      <i class="ti ti-plug-off"></i>
-                      中斷連線
-                    </button>
-                  </div>
+                  <div class="list-group list-group-flush" id="active-session-list"></div>
                 </div>
               </div>
             </div>
@@ -92,7 +77,7 @@
                     <div class="col-md-6">
                       <label class="form-label">連線名稱</label>
                       <input class="form-control" name="name" required />
-                    </div>
+            </div>
                     <div class="col-md-6">
                       <label class="form-label">Host</label>
                       <input class="form-control" name="host" required placeholder="example.com" />
@@ -114,32 +99,49 @@
                     </div>
                   </div>
 
-                  <div class="card mt-4" id="saved-key-card">
+                  <div class="card mt-4 d-none" data-connection-certificate>
                     <div class="card-header">
-                      <h3 class="card-title">私鑰內容 (可選)</h3>
+                      <h3 class="card-title">憑證設定（僅儲存在此瀏覽器）</h3>
                     </div>
                     <div class="card-body">
-                      <div class="mb-3 d-flex align-items-center justify-content-between">
-                        <div id="saved-key-status" class="badge bg-success d-none">已儲存私鑰</div>
-                        <button type="button" class="btn btn-outline-danger btn-sm d-none" id="clear-stored-key-btn">
-                          清除已儲存私鑰
-                        </button>
-                      </div>
-                      <div class="mb-3">
-                        <label class="form-label">貼上私鑰 (PEM / PPK)</label>
-                        <textarea class="form-control" rows="6" name="storedPrivateKey" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
-                        <small class="form-hint">儲存後編輯會自動帶入，不需在連線時再次選檔。</small>
-                      </div>
-                      <div class="mb-3">
-                        <label class="form-label">或上傳私鑰檔案</label>
-                        <input type="file" class="form-control" name="privateKeyFile" accept=".pem,.key,.txt,.ppk,.p8" />
-                        <small class="form-hint">選擇檔案後會轉成文字儲存於設定中。</small>
-                      </div>
-                      <div class="mb-3">
-                        <label class="form-label">私鑰 passphrase</label>
-                        <input type="password" class="form-control" name="storagePassphrase" placeholder="輸入用於私鑰的 passphrase" />
+                      <div class="mb-3 key-field-wrapper" data-key-wrapper>
+                        <label class="form-label">貼上私鑰</label>
+                        <textarea
+                          class="form-control"
+                          rows="6"
+                          name="connectionPrivateKey"
+                          placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+                        ></textarea>
+                        <div class="key-overlay d-none" data-key-overlay>
+                          <div>
+                            <strong>此連線已儲存加密的私鑰</strong>
+                            <p class="text-muted mb-2">輸入密碼後可選擇顯示，私鑰仍僅留在瀏覽器。</p>
+                          </div>
+                          <div class="btn-list">
+                            <button type="button" class="btn btn-light btn-sm" id="reveal-key-btn">顯示私鑰</button>
+                            <button type="button" class="btn btn-outline-danger btn-sm" id="clear-key-btn">
+                              刪除私鑰
+                            </button>
+                          </div>
+                        </div>
                         <small class="form-hint">
-                          儲存私鑰前會先以此 passphrase 測試並加密儲存；若留空則不會儲存，連線時需重新選擇私鑰檔。
+                          私鑰內容只會保留在瀏覽器的 LocalStorage，不會送到伺服器。
+                        </small>
+                      </div>
+                      <div class="mb-3">
+                        <label class="form-label">或選擇私鑰檔案</label>
+                        <input
+                          type="file"
+                          class="form-control"
+                          name="connectionPrivateKeyFile"
+                          accept=".pem,.key,.txt,.ppk,.p8"
+                        />
+                      </div>
+                      <div class="mb-3">
+                        <label class="form-label">私鑰 passphrase（選填）</label>
+                        <input type="password" class="form-control" name="connectionPassphrase" />
+                        <small class="form-hint">
+                          若要儲存私鑰，必須提供 passphrase 用於加密儲存。未設定 passphrase 的私鑰將不會被記錄。
                         </small>
                       </div>
                     </div>
@@ -199,27 +201,26 @@
           </div>
           <div class="modal-body">
             <form id="credential-form">
+              <div id="credential-error" class="alert alert-danger d-none"></div>
               <div class="mb-3 credential-password-field">
                 <label class="form-label">密碼</label>
                 <input type="password" class="form-control" name="password" />
               </div>
-              <div class="credential-certificate-field">
-                <div class="certificate-key-inputs">
-                  <div class="mb-3">
-                    <label class="form-label">貼上私鑰 (PEM / PPK)</label>
-                    <textarea class="form-control" name="privateKeyText" rows="5"></textarea>
-                  </div>
-                  <div class="mb-3">
-                    <label class="form-label">或上傳私鑰檔案</label>
-                    <input type="file" class="form-control" name="privateKeyFile" accept=".pem,.key,.txt,.ppk,.p8" />
-                  </div>
+              <div class="credential-certificate-field" data-certificate-block>
+                <div class="mb-3" data-certificate-key>
+                  <label class="form-label">貼上私鑰 (PEM / PPK)</label>
+                  <textarea class="form-control" name="privateKeyText" rows="5"></textarea>
+                </div>
+                <div class="mb-3" data-certificate-file>
+                  <label class="form-label">或上傳私鑰檔案</label>
+                  <input type="file" class="form-control" name="privateKeyFile" accept=".pem,.key,.txt,.ppk,.p8" />
                 </div>
                 <div class="mb-3">
                   <label class="form-label">Passphrase (如有)</label>
                   <input type="password" class="form-control" name="passphrase" />
-                  <small class="form-hint text-muted">
-                    若此連線已儲存私鑰，只需輸入 passphrase 即可使用；否則請提供私鑰內容或檔案。
-                  </small>
+                </div>
+                <div class="alert alert-info d-none" data-stored-key-hint>
+                  系統已儲存此連線的私鑰，只需輸入 passphrase 即可連線。
                 </div>
               </div>
               <div class="text-end">
@@ -235,7 +236,6 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/@tabler/core@1.0.0-beta20/dist/js/tabler.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/argon2-browser/dist/argon2.min.js" data-argon2></script>
     <script src="https://cdn.jsdelivr.net/npm/socket.io/client-dist/socket.io.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xterm/lib/xterm.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit/lib/xterm-addon-fit.js"></script>

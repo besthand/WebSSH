@@ -8,22 +8,31 @@ const addConnectionBtn = document.getElementById('add-connection-btn');
 const refreshConnectionsBtn = document.getElementById('refresh-connections-btn');
 const connectionForm = document.getElementById('connection-form');
 const connectionIdInput = connectionForm.querySelector('input[name="id"]');
+const connectionAuthTypeSelect = connectionForm.querySelector('select[name="authType"]');
+const connectionCertificateCard = document.querySelector('[data-connection-certificate]');
+const connectionKeyTextField = connectionForm.querySelector('textarea[name="connectionPrivateKey"]');
+const connectionKeyFileInput = connectionForm.querySelector('input[name="connectionPrivateKeyFile"]');
+const connectionPassphraseField = connectionForm.querySelector('input[name="connectionPassphrase"]');
+const keyWrapper = document.querySelector('[data-key-wrapper]');
+const keyOverlay = document.querySelector('[data-key-overlay]');
+const revealKeyBtn = document.getElementById('reveal-key-btn');
+const clearKeyBtn = document.getElementById('clear-key-btn');
+connectionForm.dataset.clearStoredKey = 'false';
 const cancelEditBtn = document.getElementById('cancel-edit-btn');
 const editorTitle = document.getElementById('editor-title');
 const alertBox = document.getElementById('global-alert');
-const connectionFileInput = connectionForm.querySelector('input[name="privateKeyFile"]');
-const storedPrivateKeyField = connectionForm.querySelector('textarea[name="storedPrivateKey"]');
-const storagePassphraseInput = connectionForm.querySelector('input[name="storagePassphrase"]');
-const savedKeyStatusBadge = document.getElementById('saved-key-status');
-const clearStoredKeyBtn = document.getElementById('clear-stored-key-btn');
-connectionForm.dataset.removeStoredKey = 'false';
-
 const credentialModal = document.getElementById('credential-modal');
 const credentialForm = document.getElementById('credential-form');
 const credentialPasswordBlock = credentialForm.querySelector('.credential-password-field');
 const credentialCertificateBlock = credentialForm.querySelector('.credential-certificate-field');
 const credentialFileInput = credentialForm.querySelector('input[name="privateKeyFile"]');
-const certificateKeyInputs = credentialForm.querySelector('.certificate-key-inputs');
+const credentialKeyInputs = {
+  block: credentialForm.querySelector('[data-certificate-block]'),
+  keyTextarea: credentialForm.querySelector('[data-certificate-key]'),
+  fileInput: credentialForm.querySelector('[data-certificate-file]'),
+  storedKeyHint: credentialForm.querySelector('[data-stored-key-hint]'),
+};
+const credentialErrorEl = document.getElementById('credential-error');
 const closeCredentialModalBtn = document.getElementById('close-credential-modal');
 
 const contextMenu = document.getElementById('context-menu');
@@ -38,6 +47,8 @@ const activeSessionNameEl = document.getElementById('active-session-name');
 const activeSessionHostEl = document.getElementById('active-session-host');
 const resumeSessionBtn = document.getElementById('resume-session-btn');
 const disconnectSessionBtn = document.getElementById('disconnect-session-btn');
+const activeSessionsCard = document.getElementById('active-sessions-card');
+const activeSessionListEl = document.getElementById('active-session-list');
 
 const term = new Terminal({
   convertEol: true,
@@ -49,15 +60,19 @@ term.loadAddon(fitAddon);
 term.open(document.getElementById('terminal'));
 fitAddon.fit();
 
-let savedConnections = [];
+const LOCAL_STORAGE_KEY = 'webssh_connections';
+let savedConnections = getStoredConnections();
 let editingId = null;
 let contextMenuTargetId = null;
 let currentConnection = null;
-let socket = null;
 let onDataDisposable = null;
 let modalBackdrop = null;
-let activeSession = null;
-let terminalMinimized = false;
+const runningSessions = new Map();
+let currentSessionId = null;
+const MAX_SESSION_BUFFER = 50000;
+
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
 
 const resizeObserver = new ResizeObserver(() => {
   fitAddon.fit();
@@ -65,173 +80,6 @@ const resizeObserver = new ResizeObserver(() => {
 });
 resizeObserver.observe(terminalWrapper);
 
-const textEncoder = new TextEncoder();
-const textDecoder = new TextDecoder();
-const DEFAULT_KDF_PARAMS = {
-  memoryCost: 19456,
-  iterations: 2,
-  parallelism: 1,
-  hashLength: 32,
-};
-const PBKDF2_PARAMS = {
-  iterations: 210000,
-  hash: 'SHA-256',
-};
-const ARGON2_TIMEOUT_MS = 5000;
-
-const argon2Ready = new Promise((resolve, reject) => {
-  if (window.argon2) {
-    resolve(window.argon2);
-    return;
-  }
-  const script =
-    document.querySelector('script[data-argon2]') ||
-    Array.from(document.querySelectorAll('script')).find(el =>
-      (el.getAttribute('src') || '').includes('argon2'),
-    );
-  if (!script) {
-    reject(new Error('Argon2 script tag not found'));
-    return;
-  }
-  const handleLoad = () => {
-    script.removeEventListener('load', handleLoad);
-    script.removeEventListener('error', handleError);
-    if (window.argon2) {
-      resolve(window.argon2);
-    } else {
-      reject(new Error('Argon2 library did not initialize'));
-    }
-  };
-  const handleError = () => {
-    script.removeEventListener('load', handleLoad);
-    script.removeEventListener('error', handleError);
-    reject(new Error('Failed to load Argon2 script'));
-  };
-  script.addEventListener('load', handleLoad);
-  script.addEventListener('error', handleError);
-});
-
-async function ensureArgon2() {
-  const argon2 = await argon2Ready;
-  if (!argon2) {
-    throw new Error('Argon2 library not loaded');
-  }
-  return argon2;
-}
-
-function toBase64(bytes) {
-  return btoa(String.fromCharCode(...new Uint8Array(bytes)));
-}
-
-function fromBase64(str) {
-  return Uint8Array.from(atob(str), c => c.charCodeAt(0));
-}
-
-async function deriveEncryptionKey(passphrase, salt, params = DEFAULT_KDF_PARAMS) {
-  try {
-    const argon2 = await ensureArgon2();
-    const hash = await Promise.race([
-      argon2.hash({
-        pass: passphrase,
-        salt,
-        type: argon2.ArgonType.Argon2id,
-        memoryCost: params.memoryCost,
-        time: params.iterations,
-        parallelism: params.parallelism,
-        hashLen: params.hashLength,
-        raw: true,
-      }),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('argon2-timeout')), ARGON2_TIMEOUT_MS),
-      ),
-    ]);
-    const key = await crypto.subtle.importKey('raw', hash.hash, { name: 'AES-GCM' }, false, [
-      'encrypt',
-      'decrypt',
-    ]);
-    return { key, kdf: 'argon2id', params };
-  } catch (error) {
-    console.warn('[client] Argon2 derive failed, falling back to PBKDF2', error?.message || error);
-    const key = await deriveKeyPBKDF2(passphrase, salt);
-    return { key, kdf: 'pbkdf2', params: PBKDF2_PARAMS };
-  }
-}
-
-async function deriveKeyPBKDF2(passphrase, salt) {
-  const keyMaterial = await crypto.subtle.importKey(
-    'raw',
-    textEncoder.encode(passphrase),
-    'PBKDF2',
-    false,
-    ['deriveKey'],
-  );
-  return crypto.subtle.deriveKey(
-    {
-      name: 'PBKDF2',
-      salt,
-      iterations: PBKDF2_PARAMS.iterations,
-      hash: PBKDF2_PARAMS.hash,
-    },
-    keyMaterial,
-    {
-      name: 'AES-GCM',
-      length: 256,
-    },
-    false,
-    ['encrypt', 'decrypt'],
-  );
-}
-
-async function encryptPrivateKeyClientside(privateKey, passphrase) {
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  console.log('[client] encrypting private key via Argon2id', { salt: toBase64(salt) });
-  const { key, kdf, params } = await deriveEncryptionKey(passphrase, salt, DEFAULT_KDF_PARAMS);
-  const ciphertext = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv },
-    key,
-    textEncoder.encode(privateKey),
-  );
-  return {
-    algorithm: 'AES-GCM',
-    kdf,
-    kdfParams: params,
-    salt: toBase64(salt),
-    iv: toBase64(iv),
-    ciphertext: toBase64(new Uint8Array(ciphertext)),
-  };
-}
-
-async function decryptStoredKeyClientside(storedKey, passphrase) {
-  console.log('[client] decrypting stored key', { connectionId: storedKey.connectionId });
-  const salt = fromBase64(storedKey.salt);
-  const iv = fromBase64(storedKey.iv);
-  const ciphertext = fromBase64(storedKey.ciphertext || storedKey.encrypted);
-  const params = storedKey.kdfParams ?? DEFAULT_KDF_PARAMS;
-  let key;
-  if (storedKey.kdf === 'pbkdf2') {
-    key = await deriveKeyPBKDF2(passphrase, salt);
-  } else {
-    key = await deriveEncryptionKey(passphrase, salt, params).then(result => result.key);
-  }
-  const plaintext = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv },
-    key,
-    ciphertext,
-  );
-  return textDecoder.decode(plaintext);
-}
-
-async function fetchStoredKey(connectionId) {
-  console.log('[client] fetching stored key for', connectionId);
-  const response = await fetch(`/api/connections/${connectionId}/key`);
-  if (!response.ok) {
-    throw new Error('無法讀取已儲存的私鑰');
-  }
-  const body = await response.json();
-  body.connectionId = connectionId;
-  return body;
-}
 
 function showAlert(message, type = 'info') {
   if (!message) {
@@ -243,14 +91,16 @@ function showAlert(message, type = 'info') {
   alertBox.className = `alert alert-${type}`;
 }
 
-function updateStoredKeyStatus(hasStoredKey) {
-  if (hasStoredKey) {
-    savedKeyStatusBadge.classList.remove('d-none');
-    clearStoredKeyBtn.classList.remove('d-none');
-  } else {
-    savedKeyStatusBadge.classList.add('d-none');
-    clearStoredKeyBtn.classList.add('d-none');
-  }
+function showCredentialError(message) {
+  if (!credentialErrorEl) return;
+  credentialErrorEl.textContent = message;
+  credentialErrorEl.classList.remove('d-none');
+}
+
+function clearCredentialError() {
+  if (!credentialErrorEl) return;
+  credentialErrorEl.textContent = '';
+  credentialErrorEl.classList.add('d-none');
 }
 
 function showView(name) {
@@ -259,16 +109,100 @@ function showView(name) {
   });
 }
 
+function bufferToBase64(buffer) {
+  return btoa(String.fromCharCode(...new Uint8Array(buffer)));
+}
+
+function base64ToBuffer(str) {
+  return Uint8Array.from(atob(str), c => c.charCodeAt(0));
+}
+
+async function deriveStorageKey(passphrase, salt) {
+  const baseKey = await crypto.subtle.importKey('raw', textEncoder.encode(passphrase), 'PBKDF2', false, [
+    'deriveKey',
+  ]);
+  return crypto.subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      salt,
+      iterations: 210000,
+      hash: 'SHA-256',
+    },
+    baseKey,
+    {
+      name: 'AES-GCM',
+      length: 256,
+    },
+    false,
+    ['encrypt', 'decrypt'],
+  );
+}
+
+async function encryptPrivateKeyForStorage(privateKey, passphrase) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveStorageKey(passphrase, salt);
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    key,
+    textEncoder.encode(privateKey),
+  );
+  return {
+    salt: bufferToBase64(salt),
+    iv: bufferToBase64(iv),
+    ciphertext: bufferToBase64(ciphertext),
+  };
+}
+
+async function decryptPrivateKeyFromStorage(record, passphrase) {
+  const salt = base64ToBuffer(record.salt);
+  const iv = base64ToBuffer(record.iv);
+  const ciphertext = base64ToBuffer(record.ciphertext);
+  const key = await deriveStorageKey(passphrase, salt);
+  const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
+  return textDecoder.decode(plaintext);
+}
+
+function getStoredConnections() {
+  try {
+    const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map(connection => {
+      if (connection?.certificate?.privateKey) {
+        delete connection.certificate.privateKey;
+        delete connection.certificate.passphrase;
+      }
+      return connection;
+    });
+  } catch (error) {
+    console.error('[client] failed to read local connections', error);
+    return [];
+  }
+}
+
+function persistConnections(connections) {
+  try {
+    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(connections));
+  } catch (error) {
+    console.error('[client] failed to persist connections', error);
+    showAlert('無法寫入瀏覽器儲存空間', 'danger');
+  }
+}
+
 function resetForm() {
   editingId = null;
   connectionIdInput.value = '';
   connectionForm.reset();
   connectionForm.port.value = 22;
-  storedPrivateKeyField.value = '';
-  storagePassphraseInput.value = '';
-  connectionForm.dataset.removeStoredKey = 'false';
-  updateStoredKeyStatus(false);
+  connectionKeyTextField.value = '';
+  connectionKeyFileInput.value = '';
+  connectionPassphraseField.value = '';
   editorTitle.textContent = '新增連線';
+  updateConnectionAuthFields();
+  setKeyBlurred(false);
+  connectionForm.dataset.clearStoredKey = 'false';
 }
 
 function fillForm(connection) {
@@ -279,28 +213,198 @@ function fillForm(connection) {
   connectionForm.port.value = connection.port;
   connectionForm.username.value = connection.username;
   connectionForm.authType.value = connection.authType;
-  storedPrivateKeyField.value = '';
-  storagePassphraseInput.value = '';
-  connectionForm.dataset.removeStoredKey = 'false';
-  updateStoredKeyStatus(connection.hasStoredKey);
+  connectionKeyTextField.value = '';
+  connectionPassphraseField.value = '';
+  connectionKeyFileInput.value = '';
   editorTitle.textContent = `編輯：${connection.name}`;
+  updateConnectionAuthFields();
+  setKeyBlurred(Boolean(connection.certificate?.encryptedKey));
+  connectionForm.dataset.clearStoredKey = 'false';
 }
 
-async function loadConnections() {
-  tableBody.innerHTML = `<tr><td colspan="6" class="text-center text-muted">載入中...</td></tr>`;
-  showAlert('');
-  try {
-    console.log('[client] fetching /api/connections');
-    const response = await fetch('/api/connections');
-    if (!response.ok) throw new Error('無法取得連線清單');
-    savedConnections = await response.json();
-    console.log('[client] loaded connections', savedConnections);
-    renderTable();
+function updateConnectionAuthFields() {
+  if (!connectionCertificateCard) return;
+  const type = connectionAuthTypeSelect.value;
+  connectionCertificateCard.classList.toggle('d-none', type !== 'certificate');
+  if (type !== 'certificate') {
+    setKeyBlurred(false);
+  }
+}
+
+function setKeyBlurred(blurred) {
+  if (!keyWrapper || !keyOverlay) return;
+  keyWrapper.dataset.blurred = blurred ? 'true' : 'false';
+  keyOverlay.classList.toggle('d-none', !blurred);
+}
+
+function renderActiveSessions() {
+  if (!activeSessionsCard || !activeSessionListEl) {
+    return;
+  }
+  if (!runningSessions.size) {
+    activeSessionsCard.classList.add('d-none');
+    activeSessionListEl.innerHTML = '<div class="list-group-item text-muted">目前沒有進行中的連線</div>';
+    return;
+  }
+  activeSessionsCard.classList.remove('d-none');
+  activeSessionListEl.innerHTML = Array.from(runningSessions.values())
+    .map(info => {
+      const { connection, id } = info;
+      const isActive = id === currentSessionId;
+      return `
+        <div class="list-group-item active-session-list d-flex justify-content-between align-items-center">
+          <div class="session-meta">
+            <strong>${connection.name} ${isActive ? '<span class="badge bg-blue ms-2">目前顯示</span>' : ''}</strong>
+            <small>${connection.username}@${connection.host}:${connection.port}</small>
+          </div>
+          <div class="btn-list">
+            ${
+              isActive
+                ? '<button class="btn btn-sm btn-outline-secondary" data-action="resume-session" data-session-id="' +
+                  id +
+                  '"><i class="ti ti-screen-share"></i> 重新整理</button>'
+                : '<button class="btn btn-sm btn-outline-primary" data-action="resume-session" data-session-id="' +
+                  id +
+                  '"><i class="ti ti-screen-share"></i> 切換</button>'
+            }
+            <button class="btn btn-sm btn-outline-danger" data-action="terminate-session" data-session-id="${id}">
+              <i class="ti ti-plug-off"></i> 中斷
+            </button>
+          </div>
+        </div>`;
+    })
+    .join('');
+  updateActiveSessionBanner();
+}
+
+function updateActiveSessionBanner() {
+  if (!activeSessionBanner) {
+    return;
+  }
+  if (!runningSessions.size) {
+    activeSessionBanner.classList.add('d-none');
+    return;
+  }
+  const info =
+    (currentSessionId && runningSessions.get(currentSessionId)) ||
+    runningSessions.values().next().value;
+  if (!info) {
+    activeSessionBanner.classList.add('d-none');
+    return;
+  }
+  activeSessionNameEl.textContent = info.connection.name;
+  activeSessionHostEl.textContent = `${info.connection.username}@${info.connection.host}:${info.connection.port}`;
+  activeSessionBanner.classList.remove('d-none');
+}
+
+function getCurrentSessionInfo() {
+  return currentSessionId ? runningSessions.get(currentSessionId) : null;
+}
+
+function handleSessionOutput(info, chunk) {
+  if (currentSessionId === info.id && views.terminal && !views.terminal.classList.contains('d-none')) {
+    term.write(chunk);
+  } else {
+    info.buffer = (info.buffer || '') + chunk;
+    if (info.buffer.length > MAX_SESSION_BUFFER) {
+      info.buffer = info.buffer.slice(-MAX_SESSION_BUFFER);
+    }
+  }
+}
+
+function switchToSession(sessionId) {
+  const info = runningSessions.get(sessionId);
+  if (!info) return;
+  currentSessionId = sessionId;
+  terminalNameEl.textContent = info.connection.name;
+  terminalHostEl.textContent = `${info.connection.username}@${info.connection.host}:${info.connection.port}`;
+  showView('terminal');
+  setKeyBlurred(false);
+  term.clear();
+  if (info.buffer) {
+    term.write(info.buffer);
+    info.buffer = '';
+  }
+  if (onDataDisposable) {
+    onDataDisposable.dispose();
+  }
+  onDataDisposable = term.onData(data => {
+    const active = getCurrentSessionInfo();
+    if (active) {
+      active.socket.emit('data', data);
+    }
+  });
+  emitResize();
+  updateActiveSessionBanner();
+  setTimeout(() => {
+    term.focus();
+    emitResize();
+  }, 0);
+}
+
+function registerSessionSocket(connection, session) {
+  const sessionId = session.sessionId;
+  const socket = io('/ssh', {
+    path: '/ws',
+    auth: {
+      sessionId,
+      socketToken: session.socketToken,
+    },
+  });
+  const info = {
+    id: sessionId,
+    connection,
+    socket,
+    buffer: '',
+  };
+  runningSessions.set(sessionId, info);
+
+  socket.on('connect', () => handleSessionOutput(info, '\r\n*** 已連線至遠端主機 ***\r\n'));
+  socket.on('data', chunk => handleSessionOutput(info, chunk));
+  socket.on('status', message => handleSessionOutput(info, `\r\n*** ${message} ***\r\n`));
+  socket.on('error', message => showAlert(message || 'Socket 錯誤', 'danger'));
+  const disconnectHandler = () => {
+    if (runningSessions.has(sessionId)) {
+      removeRunningSession(sessionId, '連線已結束');
+    }
+  };
+  socket.on('disconnect', disconnectHandler);
+  info.disconnectHandler = disconnectHandler;
+
+  switchToSession(sessionId);
+  renderActiveSessions();
+}
+
+function removeRunningSession(sessionId, message) {
+  const info = runningSessions.get(sessionId);
+  if (!info) return;
+  runningSessions.delete(sessionId);
+  if (info.socket) {
+    info.socket.off('disconnect', info.disconnectHandler);
+  }
+  if (currentSessionId === sessionId) {
+    currentSessionId = null;
+    term.write(`\r\n*** ${message} ***\r\n`);
+    showView('list');
+  }
+  renderActiveSessions();
+}
+
+function terminateSession(sessionId, message = '連線已中斷') {
+  const info = runningSessions.get(sessionId);
+  if (!info) return;
+  info.socket.off('disconnect', info.disconnectHandler);
+  info.socket.disconnect();
+  removeRunningSession(sessionId, message);
+}
+
+function loadConnections(showNotice = false) {
+  savedConnections = getStoredConnections();
+  renderTable();
+  if (showNotice) {
     showAlert('連線清單已更新', 'info');
-  } catch (error) {
-    console.error(error);
-    showAlert(error.message, 'danger');
-    tableBody.innerHTML = `<tr><td colspan="6" class="text-center text-danger">${error.message}</td></tr>`;
+  } else {
+    showAlert('', 'info');
   }
 }
 
@@ -318,7 +422,11 @@ function renderTable() {
         <td>${conn.port}</td>
         <td>${conn.username}</td>
         <td>${
-          conn.authType === 'password' ? '密碼' : conn.hasStoredKey ? '憑證 (已儲存)' : '憑證'
+          conn.authType === 'password'
+            ? '密碼'
+            : conn.certificate?.encryptedKey
+              ? '憑證 (已儲存)'
+              : '憑證'
         }</td>
         <td>
           <div class="btn-list flex-nowrap">
@@ -337,54 +445,43 @@ function renderTable() {
     .join('');
 }
 
-async function saveConnection(payload) {
-  showAlert('');
-  try {
-    console.log('[client] saving connection', payload);
-    const response = await fetch('/api/connections', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ error: '儲存失敗' }));
-      throw new Error(error.error || '儲存失敗');
+function saveConnection(payload) {
+  const connections = getStoredConnections();
+  let target = payload;
+  if (payload.id) {
+    const idx = connections.findIndex(conn => conn.id === payload.id);
+    if (idx === -1) {
+      throw new Error('找不到要編輯的連線');
     }
-    const body = await response.json();
-    console.log('[client] connection saved', body);
-    showAlert('連線設定已儲存', 'success');
-    await loadConnections();
-    showView('list');
-    resetForm();
-  } catch (error) {
-    console.error(error);
-    showAlert(error.message, 'danger');
+    connections[idx] = { ...connections[idx], ...payload };
+    target = connections[idx];
+  } else {
+    target = {
+      ...payload,
+      id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
+    };
+    connections.push(target);
   }
+  persistConnections(connections);
+  savedConnections = connections;
+  renderTable();
+  return target;
 }
 
-async function deleteConnection(id) {
-  showAlert('');
-  try {
-    const response = await fetch(`/api/connections/${id}`, { method: 'DELETE' });
-    if (!response.ok) throw new Error('刪除失敗');
-    savedConnections = savedConnections.filter(conn => conn.id !== id);
-    renderTable();
-    showAlert('連線已刪除', 'success');
-  } catch (error) {
-    console.error(error);
-    showAlert(error.message, 'danger');
-  }
+function deleteConnection(id) {
+  const connections = getStoredConnections().filter(conn => conn.id !== id);
+  persistConnections(connections);
+  savedConnections = connections;
+  renderTable();
 }
 
-function toggleCredentialFields(authType, options = {}) {
-  const { hideKeyInputs = false } = options;
+function toggleCredentialFields(authType) {
   credentialPasswordBlock.classList.toggle('active', authType === 'password');
   credentialCertificateBlock.classList.toggle('active', authType === 'certificate');
-  if (authType === 'certificate') {
-    credentialCertificateBlock.classList.remove('d-none');
-    certificateKeyInputs.classList.toggle('d-none', hideKeyInputs);
-  } else {
-    certificateKeyInputs.classList.remove('d-none');
+  if (authType !== 'certificate' && credentialKeyInputs.storedKeyHint) {
+    credentialKeyInputs.storedKeyHint.classList.add('d-none');
+    credentialKeyInputs.keyTextarea?.classList.remove('d-none');
+    credentialKeyInputs.fileInput?.classList.remove('d-none');
   }
 }
 
@@ -392,10 +489,17 @@ function openCredentialModal(connection) {
   currentConnection = connection;
   credentialForm.reset();
   credentialFileInput.value = '';
-  const hideKeyInputs = connection.authType === 'certificate' && connection.hasStoredKey;
-  toggleCredentialFields(connection.authType, { hideKeyInputs });
+  toggleCredentialFields(connection.authType);
   credentialForm.privateKeyText.value = '';
-  credentialForm.dataset.requiresStoredKey = connection.hasStoredKey ? 'true' : 'false';
+  credentialForm.passphrase.value = '';
+  credentialForm.dataset.hasStoredKey = connection.certificate?.encryptedKey ? 'true' : 'false';
+  if (connection.authType === 'certificate' && credentialKeyInputs.storedKeyHint) {
+    const hasStored = Boolean(connection.certificate?.encryptedKey);
+    credentialKeyInputs.storedKeyHint.classList.toggle('d-none', !hasStored);
+    credentialKeyInputs.keyTextarea?.classList.toggle('d-none', hasStored);
+    credentialKeyInputs.fileInput?.classList.toggle('d-none', hasStored);
+  }
+  clearCredentialError();
 
   credentialModal.classList.add('show');
   credentialModal.style.display = 'block';
@@ -417,12 +521,9 @@ function closeCredentialModal() {
   }
 }
 
-async function startSession(connection, credentials) {
+async function startSession(connection, credentials, { propagateError = false } = {}) {
   showAlert('');
   try {
-    if (socket) {
-      socket.disconnect();
-    }
     const payload = {
       host: connection.host,
       port: connection.port,
@@ -433,21 +534,16 @@ async function startSession(connection, credentials) {
       payload.password = credentials.password;
     } else {
       if (credentials.privateKey) {
-        payload.privateKey = credentials.privateKey;
-    } else if ((connection.hasStoredKey || credentials.connectionId) && credentials.storagePassphrase) {
-      payload.connectionId = credentials.connectionId || connection.id;
-      payload.storagePassphrase = credentials.storagePassphrase;
+      payload.privateKey = credentials.privateKey;
     } else {
       throw new Error('缺少私鑰內容');
     }
-      if (credentials.passphrase) {
-        payload.passphrase = credentials.passphrase;
-      } else if (credentials.storagePassphrase && !payload.passphrase) {
-        payload.passphrase = credentials.storagePassphrase;
-      }
+    if (credentials.passphrase) {
+      payload.passphrase = credentials.passphrase;
     }
-    console.log('[client] starting session', { connection: connection.id, authType: connection.authType, hasKey: Boolean(payload.privateKey) });
-    const response = await fetch('/api/session', {
+  }
+  console.log('[client] starting session', { connection: connection.id, authType: connection.authType, hasKey: Boolean(payload.privateKey) });
+  const response = await fetch('/api/session', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -457,89 +553,21 @@ async function startSession(connection, credentials) {
       throw new Error(error.error || '連線建立失敗');
     }
     const session = await response.json();
-    openTerminal(connection, session);
+    registerSessionSocket(connection, session);
     showAlert('SSH 連線已建立', 'success');
   } catch (error) {
     console.error(error);
+    if (propagateError) {
+      throw error;
+    }
     showAlert(error.message, 'danger');
   }
 }
 
-function openTerminal(connection, session) {
-  terminalNameEl.textContent = connection.name;
-  terminalHostEl.textContent = `${connection.username}@${connection.host}:${connection.port}`;
-  activeSession = { connection };
-  terminalMinimized = false;
-  updateActiveSessionBanner();
-  showView('terminal');
-  initSocket(session);
-  setTimeout(() => {
-    term.focus();
-    emitResize();
-  }, 0);
-}
-
-function cleanupTerminalDisplay() {
-  if (onDataDisposable) {
-    onDataDisposable.dispose();
-    onDataDisposable = null;
-  }
-  socket = null;
-  term.clear();
-  terminalCard.classList.remove('terminal-fullscreen');
-  terminalFullscreenBtn.innerHTML = '<i class="ti ti-arrows-maximize"></i>';
-}
-
-function updateActiveSessionBanner() {
-  if (activeSession && terminalMinimized) {
-    activeSessionNameEl.textContent = activeSession.connection.name;
-    activeSessionHostEl.textContent = `${activeSession.connection.username}@${activeSession.connection.host}:${activeSession.connection.port}`;
-    activeSessionBanner.classList.remove('d-none');
-  } else {
-    activeSessionBanner.classList.add('d-none');
-  }
-}
-
-function endActiveSession(message) {
-  cleanupTerminalDisplay();
-  activeSession = null;
-  terminalMinimized = false;
-  updateActiveSessionBanner();
-  showView('list');
-  if (message) {
-    showAlert(message, 'info');
-  }
-}
-
-function initSocket(session) {
-  if (socket) {
-    socket.disconnect();
-  }
-  socket = io('/ssh', {
-    path: '/ws',
-    auth: {
-      sessionId: session.sessionId,
-      socketToken: session.socketToken,
-    },
-  });
-  socket.on('connect', () => {
-    term.write('\r\n*** 已連線至遠端主機 ***\r\n');
-    emitResize();
-  });
-  socket.on('data', chunk => term.write(chunk));
-  socket.on('status', message => term.write(`\r\n*** ${message} ***\r\n`));
-  socket.on('error', message => showAlert(message || 'Socket 錯誤', 'danger'));
-  socket.on('disconnect', () => {
-    term.write('\r\n*** 連線結束 ***\r\n');
-    endActiveSession();
-  });
-  if (onDataDisposable) onDataDisposable.dispose();
-  onDataDisposable = term.onData(data => socket.emit('data', data));
-}
-
 function emitResize() {
-  if (!socket || !socket.connected) return;
-  socket.emit('resize', {
+  const info = getCurrentSessionInfo();
+  if (!info || !info.socket.connected) return;
+  info.socket.emit('resize', {
     cols: term.cols,
     rows: term.rows,
     width: terminalWrapper.clientWidth,
@@ -561,28 +589,49 @@ addConnectionBtn.addEventListener('click', () => {
   showView('editor');
 });
 
-refreshConnectionsBtn.addEventListener('click', () => loadConnections());
+connectionAuthTypeSelect.addEventListener('change', updateConnectionAuthFields);
+updateConnectionAuthFields();
+setKeyBlurred(false);
+
+revealKeyBtn?.addEventListener('click', async () => {
+  if (!editingId) {
+    showAlert('請先選擇要編輯的連線', 'info');
+    return;
+  }
+  const connection = savedConnections.find(conn => conn.id === editingId);
+  if (!connection?.certificate?.encryptedKey) {
+    showAlert('此連線尚未儲存私鑰', 'info');
+    return;
+  }
+  const passphrase = connectionPassphraseField.value.trim();
+  if (!passphrase) {
+    showAlert('請輸入私鑰密碼以顯示內容', 'warning');
+    return;
+  }
+  try {
+    const decrypted = await decryptPrivateKeyFromStorage(connection.certificate.encryptedKey, passphrase);
+    connectionKeyTextField.value = decrypted;
+    setKeyBlurred(false);
+  } catch (error) {
+    console.error('[client] decrypt stored key failed', error);
+    showAlert('密碼錯誤或私鑰已損毀，無法顯示', 'danger');
+  }
+});
+
+clearKeyBtn?.addEventListener('click', () => {
+  connectionForm.dataset.clearStoredKey = 'true';
+  connectionKeyTextField.value = '';
+  connectionKeyFileInput.value = '';
+  connectionPassphraseField.value = '';
+  setKeyBlurred(false);
+  showAlert('儲存後會刪除已儲存的私鑰', 'warning');
+});
+
+refreshConnectionsBtn.addEventListener('click', () => loadConnections(true));
 
 cancelEditBtn.addEventListener('click', () => {
   resetForm();
   showView('list');
-});
-
-connectionFileInput.addEventListener('change', async () => {
-  const content = await extractFileContent(connectionFileInput);
-  if (content) {
-    storedPrivateKeyField.value = content;
-    showAlert('已從檔案載入私鑰內容', 'info');
-    connectionForm.dataset.removeStoredKey = 'false';
-  }
-});
-
-clearStoredKeyBtn.addEventListener('click', () => {
-  connectionForm.dataset.removeStoredKey = 'true';
-  updateStoredKeyStatus(false);
-  storedPrivateKeyField.value = '';
-  storagePassphraseInput.value = '';
-  showAlert('儲存後會清除已儲存的私鑰', 'warning');
 });
 
 connectionForm.addEventListener('submit', async event => {
@@ -590,26 +639,6 @@ connectionForm.addEventListener('submit', async event => {
   try {
     console.log('[client] submit connection form', { editingId });
     const formData = new FormData(connectionForm);
-    let privateKey = storedPrivateKeyField.value.trim();
-    if (connectionFileInput.files.length) {
-      privateKey = await extractFileContent(connectionFileInput);
-      storedPrivateKeyField.value = privateKey;
-    }
-    const storagePassphrase = storagePassphraseInput.value.trim();
-    const removingStoredKey = connectionForm.dataset.removeStoredKey === 'true';
-    let encryptedStoredKey = null;
-    if (privateKey && storagePassphrase) {
-      try {
-        console.log('[client] encrypting key for storage');
-        encryptedStoredKey = await encryptPrivateKeyClientside(privateKey, storagePassphrase);
-        console.log('[client] key encrypted for storage');
-      } catch (error) {
-        console.error(error);
-        showAlert('無法加密私鑰，請確認瀏覽器支援 WebCrypto/Argon2', 'danger');
-        return;
-      }
-    }
-
     const payload = {
       name: formData.get('name').trim(),
       host: formData.get('host').trim(),
@@ -620,18 +649,47 @@ connectionForm.addEventListener('submit', async event => {
     if (editingId) {
       payload.id = editingId;
     }
-    if (payload.authType === 'certificate') {
-      if (removingStoredKey) {
-        payload.storedKey = null;
-      } else if (encryptedStoredKey) {
-        payload.storedKey = encryptedStoredKey;
-      } else if (privateKey && !storagePassphrase) {
-        console.warn('[client] passphrase missing, key will not be stored');
+if (payload.authType === 'certificate') {
+  let keyText = connectionKeyTextField.value.trim();
+  if (!keyText && connectionKeyFileInput.files.length) {
+    keyText = await extractFileContent(connectionKeyFileInput);
+        connectionKeyTextField.value = keyText;
       }
+      const passphrase = connectionPassphraseField.value.trim();
+      const existing = editingId ? savedConnections.find(conn => conn.id === editingId) : null;
+      const removingStoredKey = connectionForm.dataset.clearStoredKey === 'true';
+      if (keyText) {
+        if (!passphrase) {
+          showAlert('請輸入私鑰密碼才能儲存', 'warning');
+          return;
+        }
+        const encryptedKey = await encryptPrivateKeyForStorage(keyText, passphrase);
+        payload.certificate = { encryptedKey };
+        setKeyBlurred(true);
+        connectionKeyTextField.value = '';
+        connectionKeyFileInput.value = '';
+        connectionForm.dataset.clearStoredKey = 'false';
+      } else if (existing?.certificate?.encryptedKey && !removingStoredKey) {
+        payload.certificate = existing.certificate;
+        setKeyBlurred(true);
+      } else if (removingStoredKey) {
+        payload.certificate = null;
+        setKeyBlurred(false);
+        connectionForm.dataset.clearStoredKey = 'false';
+      } else {
+        delete payload.certificate;
+        setKeyBlurred(false);
+      }
+    } else {
+      delete payload.certificate;
+      setKeyBlurred(false);
+      connectionForm.dataset.clearStoredKey = 'false';
     }
-    console.log('[client] final payload before save', payload);
     await saveConnection(payload);
-    connectionForm.dataset.removeStoredKey = 'false';
+    showAlert('連線設定已儲存', 'success');
+    showView('list');
+    resetForm();
+    loadConnections();
   } catch (error) {
     console.error('[client] submit handler error', error);
     showAlert(error.message || '儲存失敗', 'danger');
@@ -639,9 +697,10 @@ connectionForm.addEventListener('submit', async event => {
 });
 
 tableBody.addEventListener('click', event => {
-  const action = event.target.dataset.action;
-  if (!action) return;
-  const row = event.target.closest('tr[data-id]');
+  const button = event.target.closest('button[data-action]');
+  if (!button) return;
+  const action = button.dataset.action;
+  const row = button.closest('tr[data-id]');
   if (!row) return;
   const connection = savedConnections.find(conn => conn.id === row.dataset.id);
   if (!connection) return;
@@ -668,6 +727,7 @@ contextMenu.addEventListener('click', event => {
   const action = event.target.closest('button')?.dataset.action;
   if (action === 'delete' && contextMenuTargetId) {
     deleteConnection(contextMenuTargetId);
+    showAlert('連線已刪除', 'success');
   }
   contextMenu.classList.add('d-none');
 });
@@ -678,14 +738,27 @@ document.addEventListener('click', event => {
   }
 });
 
+activeSessionListEl?.addEventListener('click', event => {
+  const button = event.target.closest('button[data-action]');
+  if (!button) return;
+  const sessionId = button.dataset.sessionId;
+  if (!sessionId) return;
+  if (button.dataset.action === 'resume-session') {
+    switchToSession(sessionId);
+  } else if (button.dataset.action === 'terminate-session') {
+    terminateSession(sessionId);
+  }
+});
+
 credentialForm.addEventListener('submit', async event => {
   event.preventDefault();
   if (!currentConnection) return;
+  clearCredentialError();
   const payload = {};
   if (currentConnection.authType === 'password') {
     payload.password = credentialForm.password.value;
     if (!payload.password) {
-      showAlert('請輸入密碼', 'warning');
+      showCredentialError('請輸入密碼');
       return;
     }
   } else {
@@ -694,33 +767,37 @@ credentialForm.addEventListener('submit', async event => {
       keyText = await extractFileContent(credentialFileInput);
       credentialForm.privateKeyText.value = keyText;
     }
-    if (keyText) {
-      payload.privateKey = keyText;
-      if (credentialForm.passphrase.value) {
-        payload.passphrase = credentialForm.passphrase.value;
-      }
-    } else if (currentConnection.hasStoredKey) {
-      const passphrase = credentialForm.passphrase.value.trim();
-      if (!passphrase) {
-        showAlert('請輸入 passphrase 以使用已儲存的私鑰', 'warning');
+    if (!keyText && currentConnection.certificate?.encryptedKey) {
+      const storedPassphrase = credentialForm.passphrase.value.trim();
+      if (!storedPassphrase) {
+        showCredentialError('請輸入私鑰密碼');
         return;
       }
       try {
-        const storedKey = await fetchStoredKey(currentConnection.id);
-        payload.privateKey = await decryptStoredKeyClientside(storedKey, passphrase);
-        payload.passphrase = passphrase;
+        keyText = await decryptPrivateKeyFromStorage(currentConnection.certificate.encryptedKey, storedPassphrase);
+        payload.passphrase = storedPassphrase;
       } catch (error) {
-        console.error(error);
-        showAlert('無法解密已儲存的私鑰，請確認 passphrase', 'danger');
+        console.error('[client] decrypt stored key for connect failed', error);
+        showCredentialError('密碼錯誤或私鑰已損毀，請重新輸入');
         return;
       }
+    }
+    if (keyText) {
+      payload.privateKey = keyText;
+      if (credentialForm.passphrase.value.trim() && !payload.passphrase) {
+        payload.passphrase = credentialForm.passphrase.value.trim();
+      }
     } else {
-      showAlert('請提供私鑰內容或上傳檔案', 'warning');
+      showCredentialError('請提供私鑰內容或上傳檔案');
       return;
     }
   }
-  closeCredentialModal();
-  await startSession(currentConnection, payload);
+  try {
+    await startSession(currentConnection, payload, { propagateError: true });
+    closeCredentialModal();
+  } catch (error) {
+    showCredentialError(error.message || '連線失敗，請確認驗證資訊');
+  }
 });
 
 closeCredentialModalBtn.addEventListener('click', () => closeCredentialModal());
@@ -732,14 +809,15 @@ credentialModal.addEventListener('click', event => {
 });
 
 backToListBtn.addEventListener('click', () => {
-  if (!activeSession) {
-    showView('list');
-    return;
+  if (currentSessionId) {
+    currentSessionId = null;
+    term.clear();
   }
-  terminalMinimized = true;
   showView('list');
-  updateActiveSessionBanner();
-  showAlert('連線仍在背景執行中', 'info');
+  renderActiveSessions();
+  if (runningSessions.size) {
+    showAlert('連線仍在背景執行中', 'info');
+  }
 });
 
 terminalFullscreenBtn.addEventListener('click', () => {
@@ -752,22 +830,18 @@ terminalFullscreenBtn.addEventListener('click', () => {
   emitResize();
 });
 
-resumeSessionBtn.addEventListener('click', () => {
-  if (!activeSession) return;
-  terminalMinimized = false;
-  showView('terminal');
-  updateActiveSessionBanner();
-  fitAddon.fit();
-  emitResize();
-  term.focus();
+resumeSessionBtn?.addEventListener('click', () => {
+  if (currentSessionId) return;
+  const first = runningSessions.keys().next().value;
+  if (first) {
+    switchToSession(first);
+  }
 });
 
-disconnectSessionBtn.addEventListener('click', () => {
-  if (!activeSession) return;
-  if (socket) {
-    socket.disconnect();
-  } else {
-    endActiveSession('連線已中斷');
+disconnectSessionBtn?.addEventListener('click', () => {
+  const target = currentSessionId ?? (runningSessions.keys().next().value || null);
+  if (target) {
+    terminateSession(target);
   }
 });
 
@@ -777,3 +851,4 @@ window.addEventListener('resize', () => {
 });
 
 loadConnections();
+renderActiveSessions();

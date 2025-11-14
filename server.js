@@ -7,7 +7,6 @@ import helmet from 'helmet';
 import crypto from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import fs from 'fs/promises';
 import ppkConverterPkg from 'ppk-to-openssh';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -46,8 +45,6 @@ const corsOriginHandler = (origin, callback) => {
 const ppkConverter = ppkConverterPkg?.default ?? ppkConverterPkg;
 const parsePPK = ppkConverter?.parseFromString ?? ppkConverter?.convert;
 
-const connectionsFilePath = path.join(__dirname, 'connections.json');
-
 const app = express();
 const server = http.createServer(app);
 const io = new SocketIOServer(server, {
@@ -72,47 +69,6 @@ app.use(express.static(staticDir));
 
 const sessions = new Map();
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS ?? 1000 * 60 * 10); // 10 minutes
-
-async function readConnections() {
-  try {
-    const data = await fs.readFile(connectionsFilePath, 'utf8');
-    if (!data.trim()) {
-      return [];
-    }
-    const parsed = JSON.parse(data);
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    return parsed.map(connection => {
-      const clone = { ...connection };
-      if (clone.privateKey && typeof clone.privateKey === 'string') {
-        delete clone.privateKey;
-      }
-      if (clone.encryptedPrivateKey) {
-        delete clone.encryptedPrivateKey;
-      }
-      return clone;
-    });
-  } catch (error) {
-    if (error.code === 'ENOENT') {
-      return [];
-    }
-    console.error('Failed to read connections file', error);
-    throw error;
-  }
-}
-
-async function writeConnections(connections) {
-  await fs.writeFile(connectionsFilePath, JSON.stringify(connections, null, 2), 'utf8');
-}
-
-function sanitizeConnection(connection) {
-  const { storedKey, ...rest } = connection;
-  return {
-    ...rest,
-    hasStoredKey: Boolean(storedKey),
-  };
-}
 
 function wipeBuffer(buf) {
   if (Buffer.isBuffer(buf)) {
@@ -195,147 +151,6 @@ function validateRequestBody(body) {
   }
   return errors;
 }
-
-function validateConnectionPayload(body) {
-  const errors = [];
-  if (!body || typeof body !== 'object') {
-    errors.push('payload is required');
-    return errors;
-  }
-  if (!body.name || !body.name.trim()) {
-    errors.push('connection name is required');
-  }
-  if (!body.host || !body.host.trim()) {
-    errors.push('host is required');
-  }
-  if (!body.username || !body.username.trim()) {
-    errors.push('username is required');
-  }
-  if (body.port && (Number.isNaN(Number(body.port)) || Number(body.port) <= 0)) {
-    errors.push('port must be a positive number');
-  }
-  if (body.authType && !['password', 'certificate'].includes(body.authType)) {
-    errors.push('authType must be password or certificate');
-  }
-  if (body.storedKey && typeof body.storedKey !== 'object') {
-    errors.push('storedKey must be an object');
-  }
-  return errors;
-}
-
-app.get('/api/connections', async (_req, res) => {
-  try {
-    const connections = await readConnections();
-    console.log(`[connections] list returned ${connections.length} entries`);
-    res.json(connections.map(sanitizeConnection));
-  } catch (error) {
-    console.error('[connections] failed to read list', error);
-    res.status(500).json({ error: 'Unable to read connections' });
-  }
-});
-
-app.get('/api/connections/:id/key', async (req, res) => {
-  const { id } = req.params;
-  try {
-    const connections = await readConnections();
-    const connection = connections.find(conn => conn.id === id);
-    if (!connection || !connection.storedKey) {
-      return res.status(404).json({ error: 'Stored key not found' });
-    }
-    res.json(connection.storedKey);
-  } catch (error) {
-    console.error('Failed to read stored key', error);
-    res.status(500).json({ error: 'Unable to read stored key' });
-  }
-});
-
-app.post('/api/connections', async (req, res) => {
-  console.log('[connections] incoming save request', {
-    id: req.body?.id,
-    name: req.body?.name,
-    authType: req.body?.authType,
-    hasStoredKey: Boolean(req.body?.storedKey),
-  });
-  const errors = validateConnectionPayload(req.body);
-  if (errors.length) {
-    console.warn('[connections] validation failed', errors);
-    return res.status(400).json({ error: errors.join(', ') });
-  }
-
-  const {
-    id,
-    name,
-    host,
-    port = 22,
-    username,
-    authType = 'password',
-    storedKey,
-  } = req.body;
-
-  try {
-    const connections = await readConnections();
-    const now = new Date().toISOString();
-    let connection;
-
-    if (id) {
-      const idx = connections.findIndex(conn => conn.id === id);
-      if (idx === -1) {
-        return res.status(404).json({ error: 'Connection not found' });
-      }
-      connections[idx] = {
-        ...connections[idx],
-        name: name.trim(),
-        host: host.trim(),
-        port: Number(port) || 22,
-        username: username.trim(),
-        authType,
-        updatedAt: now,
-      };
-      connections[idx].storedKey =
-        authType === 'certificate' && storedKey ? storedKey : authType === 'certificate' ? connections[idx].storedKey ?? null : null;
-      if (authType !== 'certificate') {
-        connections[idx].storedKey = null;
-      }
-      connection = connections[idx];
-    } else {
-      connection = {
-        id: crypto.randomUUID(),
-        name: name.trim(),
-        host: host.trim(),
-        port: Number(port) || 22,
-        username: username.trim(),
-        authType,
-        createdAt: now,
-        updatedAt: now,
-        storedKey: authType === 'certificate' ? storedKey ?? null : null,
-      };
-      connections.push(connection);
-    }
-
-    await writeConnections(connections);
-    res.json(sanitizeConnection(connection));
-  } catch (error) {
-    console.error('Failed to write connection settings', error);
-    res.status(500).json({ error: error.message || 'Unable to save connection' });
-  }
-});
-
-app.delete('/api/connections/:id', async (req, res) => {
-  const { id } = req.params;
-  try {
-    const connections = await readConnections();
-    const idx = connections.findIndex(conn => conn.id === id);
-    if (idx === -1) {
-      return res.status(404).json({ error: 'Connection not found' });
-    }
-    connections.splice(idx, 1);
-    await writeConnections(connections);
-    res.status(204).end();
-  } catch (error) {
-    console.error('Failed to delete connection', error);
-    res.status(500).json({ error: 'Unable to delete connection' });
-  }
-});
 
 app.get('/healthz', (_req, res) => {
   res.json({ status: 'ok', sessions: sessions.size });

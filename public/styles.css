@@ -118,6 +118,48 @@ body {
   min-height: 140px;
 }
 
+.key-field-wrapper {
+  position: relative;
+}
+
+.key-field-wrapper textarea {
+  transition: filter 0.2s ease;
+}
+
+.key-field-wrapper[data-blurred='true'] textarea {
+  filter: blur(6px);
+  pointer-events: none;
+}
+
+.key-overlay {
+  position: absolute;
+  inset: 45px 16px 16px 16px;
+  background: rgba(5, 7, 13, 0.92);
+  border-radius: 0.5rem;
+  padding: 1rem;
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  z-index: 2;
+}
+
+.active-session-list .list-group-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+
+.active-session-list .session-meta {
+  display: flex;
+  flex-direction: column;
+}
+
+.active-session-list .session-meta small {
+  color: #94a3b8;
+}
+
 .table tbody tr td:last-child {
   white-space: nowrap;
 }
