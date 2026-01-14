@@ -49,10 +49,13 @@ body {
 
 .terminal-wrapper {
   position: relative;
-  height: calc(100vh - 260px);
+  height: calc(100vh - 180px);
+  /* 從 260px 改為 180px，讓區域變大 */
   background: var(--terminal-bg);
   border-radius: 0 0 0.5rem 0.5rem;
   overflow: hidden;
+  padding: 12px;
+  /* 增加內邊距，文字才不會貼邊 */
 }
 
 @media (max-width: 768px) {
@@ -166,4 +169,52 @@ body {
 
 .view-card.d-none {
   display: none;
+}
+
+/* Status Indicator */
+.status-indicator-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+  transition: all 0.3s ease;
+  position: relative;
+}
+
+.status-indicator-dot.busy {
+  background-color: #f76707;
+  /* Orange */
+  box-shadow: 0 0 8px #f76707;
+}
+
+.status-indicator-dot.ready {
+  background-color: #2fb344;
+  /* Green */
+  box-shadow: 0 0 8px #2fb344;
+}
+
+.status-indicator-dot.busy::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 2px solid #f76707;
+  animation: pulse 1.5s infinite;
+  opacity: 0;
+}
+
+@keyframes pulse {
+  0% {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+
+  50% {
+    opacity: 0.5;
+  }
+
+  100% {
+    transform: scale(1.4);
+    opacity: 0;
+  }
 }

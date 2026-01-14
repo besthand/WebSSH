@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="zh-TW">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta http-equiv="X-UA-Compatible" content="ie=edge" />
+    <title>WebSSH Agent Mode</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/core@latest/dist/css/tabler.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm/css/xterm.css" />
+    <link rel="stylesheet" href="styles.css" />
+    <style>
+        body {
+            overflow: hidden;
+            /* Prevent body scroll, handle in grid */
+        }
+
+        .agent-layout {
+            display: grid;
+            grid-template-columns: 1fr 450px;
+            grid-template-rows: auto 1fr;
+            height: 100vh;
+            gap: 0;
+        }
+
+        .agent-header {
+            grid-column: 1 / -1;
+            border-bottom: 1px solid var(--tblr-border-color);
+            background: var(--tblr-bg-surface);
+            padding: 0.75rem 1rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .agent-terminal-area {
+            grid-column: 1;
+            grid-row: 2;
+            padding: 1rem;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .agent-sidebar {
+            grid-column: 2;
+            grid-row: 2;
+            border-left: 1px solid var(--tblr-border-color);
+            background: var(--tblr-bg-surface);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .terminal-wrapper {
+            position: absolute;
+            top: 8px;
+            left: 8px;
+            right: 8px;
+            bottom: 8px;
+            height: auto !important;
+            margin-bottom: 0;
+            padding: 0;
+            background-color: #05070d;
+            overflow: hidden;
+            border-radius: 4px;
+        }
+
+        /* Ensure xterm fits properly */
+        .terminal-wrapper .xterm {
+            height: 100%;
+            padding: 8px;
+        }
+
+        .terminal-wrapper .xterm-viewport {
+            overflow-y: auto !important;
+        }
+
+        .logs-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1rem;
+            font-family: monospace;
+            font-size: 0.875rem;
+            min-height: 0;
+            /* Important for flex overflow */
+        }
+
+        /* Markdown styling in logs */
+        .log-content {
+            margin-top: 0.25rem;
+        }
+
+        .log-content p {
+            margin: 0 0 0.5rem 0;
+        }
+
+        .log-content p:last-child {
+            margin-bottom: 0;
+        }
+
+        .log-content code {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 0.1rem 0.3rem;
+            border-radius: 3px;
+            font-size: 0.85em;
+        }
+
+        .log-content pre {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 0.5rem;
+            border-radius: 4px;
+            overflow-x: auto;
+            margin: 0.5rem 0;
+        }
+
+        .log-content pre code {
+            background: none;
+            padding: 0;
+        }
+
+        .log-content ul,
+        .log-content ol {
+            margin: 0.25rem 0;
+            padding-left: 1.5rem;
+        }
+
+        .log-content h1,
+        .log-content h2,
+        .log-content h3 {
+            font-size: 1em;
+            margin: 0.5rem 0 0.25rem 0;
+        }
+
+        .log-entry {
+            margin-bottom: 0.5rem;
+            padding: 0.5rem;
+            border-radius: 4px;
+            background: var(--tblr-bg-surface-secondary);
+            border-left: 3px solid transparent;
+            word-break: break-word;
+        }
+
+        .log-entry.user {
+            border-left-color: var(--tblr-primary);
+        }
+
+        .log-entry.agent {
+            border-left-color: var(--tblr-purple);
+        }
+
+        .log-entry.system {
+            border-left-color: var(--tblr-gray-500);
+        }
+
+        .log-entry.error {
+            border-left-color: var(--tblr-danger);
+            background: rgba(214, 57, 57, 0.1);
+        }
+
+        .agent-controls {
+            padding: 1rem;
+            border-top: 1px solid var(--tblr-border-color);
+            flex-shrink: 0;
+            /* Don't shrink controls area */
+        }
+    </style>
+</head>
+
+<body class="theme-dark">
+    <div class="agent-layout">
+        <!-- Header -->
+        <header class="agent-header">
+            <div class="d-flex align-items-center gap-3">
+                <a href="/" class="btn btn-icon btn-ghost-secondary" aria-label="Back to Terminal">
+                    <i class="ti ti-arrow-left"></i>
+                </a>
+                <h1 class="page-title m-0">
+                    <i class="ti ti-robot me-2"></i>
+                    WebSSH Agent
+                </h1>
+                <div class="badge bg-purple-lt ms-2">Beta</div>
+            </div>
+            <div class="d-flex align-items-center gap-2">
+                <span class="status-indicator-dot" id="terminal-status-dot"></span>
+                <small class="text-muted" id="terminal-status-text">Disconnected</small>
+                <div class="vr mx-2"></div>
+                <button class="btn btn-sm btn-outline-secondary" id="settings-btn">
+                    <i class="ti ti-settings me-1"></i> API 設定
+                </button>
+            </div>
+        </header>
+
+        <!-- Terminal Area -->
+        <main class="agent-terminal-area">
+            <div class="card h-100 d-flex flex-column">
+                <div class="card-header py-2 min-h-0">
+                    <div class="d-flex align-items-center justify-content-between w-100">
+                        <span id="current-connection-name" class="fw-bold">未連線</span>
+                        <button class="btn btn-sm btn-primary" id="select-connection-btn">
+                            選擇連線
+                        </button>
+                    </div>
+                </div>
+                <div class="card-body p-0 flex-fill position-relative">
+                    <div class="terminal-wrapper" id="terminal"></div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Agent Sidebar -->
+        <aside class="agent-sidebar">
+            <!-- Agent State/Thought Log -->
+            <div class="card-header border-bottom">
+                <h3 class="card-title">Agent 活動日誌</h3>
+                <div class="card-actions">
+                    <button class="btn btn-icon btn-sm btn-ghost-secondary" id="clear-logs-btn" title="清除日誌">
+                        <i class="ti ti-trash"></i>
+                    </button>
+                </div>
+            </div>
+
+            <div class="logs-container" id="logs-container">
+                <div class="log-entry system">
+                    <div class="fw-bold">System</div>
+                    Agent 介面已就緒。請先設定 OpenRouter API Key 並選擇 SSH 連線。
+                </div>
+            </div>
+
+            <!-- Input Area -->
+            <div class="agent-controls">
+                <label class="form-label">任務指令</label>
+                <div class="input-group mb-2">
+                    <textarea id="agent-input" class="form-control" rows="3"
+                        placeholder="例如：檢查磁碟空間並刪除 /tmp 下超過 7 天的檔案..."></textarea>
+                </div>
+                <div class="d-flex justify-content-between align-items-center">
+                    <div class="text-muted small">
+                        Model: <span id="model-display">google/gemini-2.0-flash-001</span>
+                    </div>
+                    <button class="btn btn-purple" id="start-agent-btn">
+                        <i class="ti ti-player-play me-1"></i>
+                        執行
+                    </button>
+                    <button class="btn btn-danger d-none" id="stop-agent-btn">
+                        <i class="ti ti-player-stop me-1"></i>
+                        停止
+                    </button>
+                </div>
+            </div>
+        </aside>
+    </div>
+
+    <!-- API Key Modal -->
+    <div class="modal modal-blur fade" id="api-key-modal" tabindex="-1" role="dialog" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered" role="document">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Agent 設定</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">OpenRouter API Key</label>
+                        <input type="password" class="form-control" id="api-key-input" placeholder="sk-or-...">
+                        <div class="form-text">金鑰將僅儲存於您的瀏覽器 LocalStorage 中。</div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Model ID</label>
+                        <input type="text" class="form-control" id="model-id-input" value="google/gemini-2.0-flash-001"
+                            placeholder="google/gemini-2.0-flash-001">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-link link-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary m-auto" data-bs-dismiss="modal"
+                        id="save-api-key-btn">儲存設定</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Connection Selection Modal (Can reuse logic via JS, but maybe simple list here) -->
+    <div class="modal modal-blur fade" id="connection-modal" tabindex="-1" role="dialog" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered" role="document">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">選擇 SSH 連線</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="list-group list-group-flush" id="connection-list-group">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Credential Input Modal -->
+    <div class="modal modal-blur fade" id="credential-modal" tabindex="-1" role="dialog" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-sm" role="document">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="credential-modal-title">輸入憑證</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label" id="credential-label">密碼</label>
+                        <input type="password" class="form-control" id="credential-input" placeholder="">
+                        <div class="form-text" id="credential-hint"></div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-link link-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" id="credential-submit-btn">確定</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@tabler/core@latest/dist/js/tabler.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit/lib/xterm-addon-fit.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/socket.io/client-dist/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="agent.js" type="module"></script>
+</body>
+
+</html>
