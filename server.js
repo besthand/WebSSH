@@ -64,8 +64,34 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '512kb' }));
 
+// Serve static files with proper MIME types
 const staticDir = path.join(__dirname, 'public');
-app.use(express.static(staticDir));
+app.use(express.static(staticDir, {
+  setHeaders: (res, filePath) => {
+    // Ensure proper MIME types for ES modules
+    if (filePath.endsWith('.js')) {
+      res.setHeader('Content-Type', 'application/javascript; charset=UTF-8');
+    } else if (filePath.endsWith('.mjs')) {
+      res.setHeader('Content-Type', 'application/javascript; charset=UTF-8');
+    } else if (filePath.endsWith('.css')) {
+      res.setHeader('Content-Type', 'text/css; charset=UTF-8');
+    }
+  },
+  // Disable directory listing
+  index: false,
+  // Add fallback for development
+  fallthrough: true,
+}));
+
+// Explicitly serve index.html for root path
+app.get('/', (req, res) => {
+  res.sendFile(path.join(staticDir, 'index.html'));
+});
+
+// Serve agent.html
+app.get('/agent', (req, res) => {
+  res.sendFile(path.join(staticDir, 'agent.html'));
+});
 
 const sessions = new Map();
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS ?? 1000 * 60 * 10); // 10 minutes
