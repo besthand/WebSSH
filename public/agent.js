@@ -38,6 +38,13 @@ const confirmCommandEl = document.getElementById('confirm-command');
 const confirmPurposeEl = document.getElementById('confirm-purpose');
 const confirmAllowBtn = document.getElementById('confirm-allow-btn');
 const confirmDenyBtn = document.getElementById('confirm-deny-btn');
+const planModeToggle = document.getElementById('plan-mode-toggle');
+const executionPlanSection = document.getElementById('execution-plan-section');
+const executionPlanContent = document.getElementById('execution-plan-content');
+const collapsePlanBtn = document.getElementById('collapse-plan-btn');
+const timeoutModalEl = document.getElementById('timeout-modal');
+const timeoutWaitBtn = document.getElementById('timeout-wait-btn');
+const timeoutAbortBtn = document.getElementById('timeout-abort-btn');
 
 // --- State ---
 let term;
@@ -50,6 +57,10 @@ let agentLoopController = null; // AbortController
 let terminalBuffer = '';
 let isTerminalReady = false;
 let lastPromptLine = -1;
+let planMode = false;
+let currentPlan = null;
+let currentStepIndex = 0;
+let planConfirmed = false;
 
 // --- Constants ---
 const DEFAULT_MODEL = 'google/gemini-2.0-flash-001';
@@ -111,6 +122,20 @@ function initView() {
     modelIdInput.value = savedModel;
     modelDisplay.textContent = savedModel;
 
+    // Plan Mode Toggle
+    planModeToggle.addEventListener('change', (e) => {
+        planMode = e.target.checked;
+        console.log('[plan-mode] toggled:', planMode);
+    });
+
+    // Plan Collapse Toggle
+    collapsePlanBtn.addEventListener('click', () => {
+        executionPlanContent.classList.toggle('d-none');
+        const icon = collapsePlanBtn.querySelector('i');
+        icon.classList.toggle('ti-chevron-up');
+        icon.classList.toggle('ti-chevron-down');
+    });
+
     loadConnectionsToModal();
 }
 
@@ -160,6 +185,26 @@ function updateTerminalStatus() {
 
 // --- Agent Logic ---
 
+async function continueAgentWithPlan() {
+    if (!currentPlan || !planConfirmed) {
+        addLog('error', 'No confirmed plan to execute');
+        return;
+    }
+
+    addLog('system', '開始執行計劃...');
+
+    // Get the original task from the first user message in history
+    const task = agentInput.value.trim();
+
+    // Re-run agent with plan context
+    agentRunning = true;
+    updateAgentUI(true);
+
+    // Continue with the existing runAgent logic
+    // It will now see planConfirmed = true and execute steps
+    runAgent(task);
+}
+
 async function runAgent(task) {
     if (!localStorage.getItem('openrouter_api_key')) {
         addLog('error', '請先設定 OpenRouter API Key');
@@ -185,34 +230,72 @@ async function runAgent(task) {
 
     addLog('user', task);
 
-    const conversationHistory = [
-        {
-            role: 'system',
-            content: `You are an expert Linux System Administrator AI Agent connected to a remote server via SSH.
+    // Build system prompt based on plan mode
+    let systemPrompt = `You are an expert Linux System Administrator AI Agent connected to a remote server via SSH.
 
 CAPABILITIES:
 1. Execute shell commands to gather information or perform tasks
 2. Analyze terminal output and provide insights
 3. Answer questions about the server based on gathered information
 
-OUTPUT FORMAT (JSON only, no markdown):
-{
-  "thought": "Your analysis and reasoning...",
-  "command": "shell command to execute",
-  "answer": "Direct answer to user (optional)"
-}
-
 RULES:
 - LANGUAGE: Always communicate in **Traditional Chinese (繁體中文)** for "thought" and "answer" fields.
-- MINIMALISM: Execute only the necessary steps to complete the task. Avoid redundant info-gathering.
+- MINIMALISM: Execute only the necessary steps to complete the task.
 - EFFICIENCY: Combine commands if possible (e.g., using && or ;) to reduce turns.
-- DANGEROUS COMMANDS: If a command affects multiple files or targets (e.g., 'rm', 'chmod'), list all targets clearly in your "thought" field so the user knows exactly what will be affected.
-- If user asks a QUESTION, gather info then provide "answer" and set "command" to "DONE".
-- If user asks for an ACTION, execute and report success.
+- DANGEROUS COMMANDS: List all targets clearly in your "thought" field.
 - Use the "answer" field for communication; NEVER use 'echo' in commands for talking.
 - When task is complete, set "command": "DONE".
-- Avoid interactive commands (vi, nano, top, less). Use non-interactive alternatives (sed, cat, grep).
-- Be extremely concise in your thoughts and answers.
+- Avoid interactive commands (vi, nano, top, less).
+- Be extremely concise in your thoughts and answers.`;
+
+    if (planMode && !planConfirmed) {
+        // PLANNING PHASE - Force format
+        systemPrompt += `
+
+**CURRENT PHASE: PLANNING**
+You MUST first create an execution plan. Do NOT execute any shell commands yet.
+
+OUTPUT FORMAT (JSON only):
+{
+  "mode": "planning",
+  "thought": "任務分析...",
+  "plan": {
+    "title": "任務標題",
+    "steps": [
+      {"id": 1, "title": "步驟1", "description": "說明..."},
+      {"id": 2, "title": "步驟2", "description": "說明..."}
+    ]
+  },
+  "command": "PLAN",
+  "answer": "我已經為您準備好了執行計劃，請確認後開始執行。"
+}`;
+    } else {
+        // EXECUTION PHASE - Normal format
+        systemPrompt += `
+
+OUTPUT FORMAT (JSON only):
+{
+  "thought": "分析...",
+  "command": "shell 指令",
+  "answer": "說明...",
+  "stepId": 123 (僅在執行計劃模式時包含此欄位)
+}`;
+
+        if (planMode && planConfirmed && currentPlan) {
+            systemPrompt += `
+
+**CURRENT PHASE: EXECUTING CONFIRMED PLAN**
+Plan Title: ${currentPlan.title}
+Steps: ${JSON.stringify(currentPlan.steps)}
+Completed Steps: ${currentStepIndex}
+Current Step Index: ${currentStepIndex}
+
+You are now executing Step ${currentStepIndex + 1}: "${currentPlan.steps[currentStepIndex].title}".
+In your response, you MUST include "stepId": ${currentPlan.steps[currentStepIndex].id}.`;
+        }
+    }
+
+    systemPrompt += `
 
 EXAMPLE - Question (Efficient):
 User: "Which process is using the most memory?"
@@ -221,8 +304,13 @@ Turn 2: {"thought": "已找到程序資訊", "command": "DONE", "answer": "目�
 
 EXAMPLE - Action (Multiple Targets):
 User: "Delete log1.txt and log2.txt"
-Turn 1: {"thought": "準備刪除以下目標：\\n1. log1.txt\\n2. log2.txt", "command": "rm log1.txt log2.txt"}
-Turn 2: {"thought": "刪除完成", "command": "DONE", "answer": "已成功刪除指定的兩個日誌檔案。"}`
+Turn 1: {"thought": "準備刪除以下目標:\\n1. log1.txt\\n2. log2.txt", "command": "rm log1.txt log2.txt"}
+Turn 2: {"thought": "刪除完成", "command": "DONE", "answer": "已成功刪除指定的兩個日誌檔案。"}`;
+
+    const conversationHistory = [
+        {
+            role: 'system',
+            content: systemPrompt
         }
     ];
 
@@ -280,20 +368,64 @@ Generate your next move.
 
             addLog('thinking', plan.thought);
 
+            // Handle plan mode - planning phase
+            if (plan.mode === 'planning' && plan.plan) {
+                // Display answer (explanation of the plan)
+                if (plan.answer) {
+                    addLog('agent', plan.answer);
+                }
+
+                // Display the plan and wait for confirmation
+                displayPlan(plan.plan);
+
+                // Pause agent execution, wait for user confirmation
+                agentRunning = false;
+                updateAgentUI(false);
+                return;  // Exit and wait for confirmPlan() callback
+            }
+
             // Display answer if provided
             if (plan.answer) {
                 addLog('agent', plan.answer);
             }
 
+            // Handle step completion in plan mode
+            if (planMode && planConfirmed && plan.stepId) {
+                updateStepStatus(plan.stepId, 'running');
+            }
+
             if (plan.command === 'DONE') {
+                // Mark current step as completed if in plan mode
+                if (planMode && planConfirmed && currentPlan && currentStepIndex < currentPlan.steps.length) {
+                    updateStepStatus(currentPlan.steps[currentStepIndex].id, 'completed');
+                }
+
                 addLog('system', '✅ Agent 已完成任務');
+
+                // Hide plan section after completion
+                if (planMode) {
+                    setTimeout(() => hidePlanSection(), 2000);
+                }
                 break;
             }
 
-            if (plan.command && plan.command !== 'DONE') {
+            if (plan.command && plan.command !== 'DONE' && plan.command !== 'PLAN') {
                 addLog('agent', `⚡ 執行: ${plan.command}`);
-                // 4. GUI Feedback & Execution
+                // 抱歉，這裡需要刪除並重新建立
                 await executeCommand(plan.command, plan.thought);
+
+                // Mark step as completed if in plan mode
+                if (planMode && planConfirmed && plan.stepId) {
+                    updateStepStatus(plan.stepId, 'completed');
+                    currentStepIndex++;
+
+                    // Check if all steps are done
+                    if (currentStepIndex >= currentPlan.steps.length) {
+                        addLog('system', '✅ 所有計劃步驟已完成');
+                        setTimeout(() => hidePlanSection(), 2000);
+                        break;
+                    }
+                }
             }
 
             // Add AI response to conversation history for context continuity
@@ -463,6 +595,32 @@ function confirmDangerousCommand(command, purpose) {
     });
 }
 
+async function askTimeoutAction() {
+    return new Promise((resolve) => {
+        const handleWait = () => {
+            cleanup();
+            hideModal(timeoutModalEl);
+            resolve('wait');
+        };
+
+        const handleAbort = () => {
+            cleanup();
+            hideModal(timeoutModalEl);
+            resolve('abort');
+        };
+
+        const cleanup = () => {
+            timeoutWaitBtn.removeEventListener('click', handleWait);
+            timeoutAbortBtn.removeEventListener('click', handleAbort);
+        };
+
+        timeoutWaitBtn.addEventListener('click', handleWait);
+        timeoutAbortBtn.addEventListener('click', handleAbort);
+
+        showModal(timeoutModalEl);
+    });
+}
+
 async function executeCommand(command, purpose) {
     if (!socket || !socket.connected) throw new Error('Socket disconnected');
 
@@ -482,13 +640,13 @@ async function executeCommand(command, purpose) {
 
     // Wait for "Ready" state (prompt detection)
     // We poll every 500ms
-    const startTime = Date.now();
-    const timeout = 30000; // 30s timeout for single command
+    let startTime = Date.now();
+    const timeout = 30000; // 30s timeout interval
 
     // Wait a bit for the command to echo and start processing
     await new Promise(r => setTimeout(r, 500));
 
-    while (Date.now() - startTime < timeout) {
+    while (true) {
         // Check for password prompt
         const lastLine = getLastTerminalLine().toLowerCase();
         if (isPasswordPrompt(lastLine)) {
@@ -501,6 +659,7 @@ async function executeCommand(command, purpose) {
             if (password !== null) {
                 socket.emit('data', password + '\n');
                 await new Promise(r => setTimeout(r, 500)); // Wait for response
+                startTime = Date.now(); // Reset timeout after interaction
             } else {
                 // User cancelled - send Ctrl+C to abort
                 socket.emit('data', '\x03');
@@ -513,10 +672,24 @@ async function executeCommand(command, purpose) {
             // Command likely finished
             return;
         }
+
+        // Check for timeout
+        if (Date.now() - startTime >= timeout) {
+            addLog('system', '⏳ 指令執行逾時，等待使用者選擇...');
+            const action = await askTimeoutAction();
+            if (action === 'wait') {
+                addLog('system', '⏳ 繼續等待 30 秒...');
+                startTime = Date.now(); // Reset timer
+            } else {
+                addLog('system', '🛑 使用者手動中止執行');
+                // Send Ctrl+C to abort the command
+                socket.emit('data', '\x03');
+                throw new Error('指令執行逾時並由使用者手動中止');
+            }
+        }
+
         await new Promise(r => setTimeout(r, 500));
     }
-    // Timeout warning
-    addLog('system', 'Command timed out waiting for prompt. Continuing...');
 }
 
 // Detect password prompts in terminal output
@@ -612,6 +785,114 @@ function escapeHtml(text) {
         .replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;")
         .replace(/'/g, "&#039;");
+}
+
+// --- Plan Mode Functions ---
+
+function displayPlan(plan) {
+    currentPlan = plan;
+    currentStepIndex = 0;
+    planConfirmed = false;
+    executionPlanContent.innerHTML = '';
+
+    // Add plan title if exists
+    if (plan.title) {
+        const titleEl = document.createElement('div');
+        titleEl.className = 'p-2 mb-2 fw-bold border-bottom';
+        titleEl.textContent = plan.title;
+        executionPlanContent.appendChild(titleEl);
+    }
+
+    // Add each step
+    plan.steps.forEach((step, index) => {
+        const stepEl = document.createElement('div');
+        stepEl.className = 'plan-step pending';
+        stepEl.id = `plan-step-${step.id}`;
+        stepEl.innerHTML = `
+            <div class="plan-step-icon">${index + 1}</div>
+            <div class="plan-step-content">
+                <div class="plan-step-title">${escapeHtml(step.title)}</div>
+                <div class="plan-step-description">${escapeHtml(step.description)}</div>
+            </div>
+        `;
+        executionPlanContent.appendChild(stepEl);
+    });
+
+    // Add confirm/reject actions
+    const actionsEl = document.createElement('div');
+    actionsEl.className = 'plan-confirm-actions';
+    actionsEl.id = 'plan-actions';
+    actionsEl.innerHTML = `
+        <button class="btn btn-sm btn-ghost-danger" id="plan-reject-btn">
+            <i class="ti ti-x me-1"></i>拒絕
+        </button>
+        <button class="btn btn-sm btn-primary" id="plan-confirm-btn">
+            <i class="ti ti-check me-1"></i>確認執行
+        </button>
+    `;
+    executionPlanContent.appendChild(actionsEl);
+
+    // Show plan section
+    executionPlanSection.classList.remove('d-none');
+
+    // Bind button events
+    document.getElementById('plan-confirm-btn').addEventListener('click', confirmPlan);
+    document.getElementById('plan-reject-btn').addEventListener('click', rejectPlan);
+
+    // Scroll plan into view
+    executionPlanSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function updateStepStatus(stepId, status) {
+    const stepEl = document.getElementById(`plan-step-${stepId}`);
+    if (!stepEl) return;
+
+    // Remove all status classes
+    stepEl.classList.remove('pending', 'running', 'completed', 'failed');
+    // Add new status
+    stepEl.classList.add(status);
+
+    // Update icon
+    const icon = stepEl.querySelector('.plan-step-icon');
+    if (status === 'running') {
+        icon.innerHTML = '⟳';
+    } else if (status === 'completed') {
+        icon.innerHTML = '✓';
+    } else if (status === 'failed') {
+        icon.innerHTML = '✕';
+    }
+}
+
+async function confirmPlan() {
+    // Remove action buttons
+    document.getElementById('plan-actions')?.remove();
+
+    // Set flag
+    planConfirmed = true;
+
+    // Add system log
+    addLog('system', `✅ 計劃已確認，開始執行 ${currentPlan.steps.length} 個步驟...`);
+
+    // Resume agent execution
+    continueAgentWithPlan();
+}
+
+function rejectPlan() {
+    addLog('system', '❌ 用戶拒絕了執行計劃');
+    // Hide plan section
+    executionPlanSection.classList.add('d-none');
+    currentPlan = null;
+    planConfirmed = false;
+    agentRunning = false;
+    updateAgentUI(false);
+}
+
+function hidePlanSection() {
+    executionPlanSection.classList.add('d-none');
+    executionPlanContent.innerHTML = '';
+    currentPlan = null;
+    currentStepIndex = 0;
+    planConfirmed = false;
 }
 
 function updateAgentUI(running) {
@@ -892,6 +1173,13 @@ function submitTask() {
     const task = agentInput.value.trim();
     if (!task) return;
     currentTask = task;
+
+    // Reset planning state for NEW task
+    planConfirmed = false;
+    currentStepIndex = 0;
+    currentPlan = null;
+    hidePlanSection();
+
     runAgent(task);
 }
 

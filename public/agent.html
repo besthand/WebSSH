@@ -7,7 +7,7 @@
     <meta http-equiv="X-UA-Compatible" content="ie=edge" />
     <title>WebSSH Agent Mode</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/core@latest/dist/css/tabler.min.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons@latest/iconfont/tabler-icons.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm/css/xterm.css" />
     <link rel="stylesheet" href="styles.css" />
     <style>
@@ -249,6 +249,159 @@
             display: none;
         }
 
+        /* Fix Sidebar Header Layout */
+        .agent-sidebar .card-header {
+            padding: 0.75rem 1rem;
+            flex-wrap: nowrap;
+        }
+
+        .agent-sidebar .card-title {
+            font-size: 1rem;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            line-height: 1.5;
+        }
+
+        .agent-sidebar .card-actions {
+            margin-left: auto;
+            flex-shrink: 0;
+            padding-left: 0.5rem;
+        }
+
+        /* Execution Plan Styles */
+        .execution-plan-section {
+            border-bottom: 1px solid var(--tblr-border-color);
+            max-height: 40vh;
+            overflow-y: auto;
+            flex-shrink: 0;
+            background-color: rgba(var(--tblr-primary-rgb), 0.03);
+            /* 淺藍色背景 */
+            border-left: 4px solid var(--tblr-primary);
+            /* 左側強調邊框 */
+            box-shadow: inset 0 -4px 4px -4px rgba(0, 0, 0, 0.05);
+        }
+
+        .execution-plan-section .card-header {
+            background-color: rgba(var(--tblr-primary-rgb), 0.05);
+            border-bottom-color: rgba(var(--tblr-primary-rgb), 0.1);
+        }
+
+        .execution-plan-section .card-title {
+            color: var(--tblr-primary);
+            font-weight: 600;
+        }
+
+        .execution-plan-content {
+            padding: 1rem;
+            font-size: 0.875rem;
+        }
+
+        .plan-step {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.75rem;
+            padding: 0.75rem;
+            margin-bottom: 0.75rem;
+            border-radius: 6px;
+            background: var(--tblr-bg-surface);
+            border: 1px solid var(--tblr-border-color);
+            /* 改為全邊框 */
+            border-left-width: 4px;
+            /* 保持左側狀態指示 */
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+            /* 增加立體感 */
+            transition: all 0.2s;
+        }
+
+        .plan-step.pending {
+            border-left-color: var(--tblr-gray-500);
+            opacity: 0.7;
+        }
+
+        .plan-step.running {
+            border-left-color: var(--tblr-primary);
+            background: linear-gradient(135deg, rgba(32, 107, 196, 0.1), rgba(32, 107, 196, 0.05));
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+
+        .plan-step.completed {
+            border-left-color: var(--tblr-success);
+            opacity: 0.8;
+        }
+
+        .plan-step.failed {
+            border-left-color: var(--tblr-danger);
+            background: rgba(214, 57, 57, 0.05);
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.8;
+            }
+        }
+
+        .plan-step-icon {
+            flex-shrink: 0;
+            width: 20px;
+            height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            font-size: 12px;
+        }
+
+        .plan-step.pending .plan-step-icon {
+            background: var(--tblr-gray-200);
+            color: var(--tblr-gray-600);
+        }
+
+        .plan-step.running .plan-step-icon {
+            background: var(--tblr-primary);
+            color: white;
+        }
+
+        .plan-step.completed .plan-step-icon {
+            background: var(--tblr-success);
+            color: white;
+        }
+
+        .plan-step.failed .plan-step-icon {
+            background: var(--tblr-danger);
+            color: white;
+        }
+
+        .plan-step-content {
+            flex: 1;
+        }
+
+        .plan-step-title {
+            font-weight: 600;
+            margin-bottom: 0.25rem;
+            color: var(--tblr-body-color);
+        }
+
+        .plan-step-description {
+            font-size: 0.8rem;
+            color: var(--tblr-gray-600);
+            line-height: 1.4;
+        }
+
+        .plan-confirm-actions {
+            padding: 0.75rem;
+            border-top: 1px solid var(--tblr-border-color);
+            display: flex;
+            gap: 0.5rem;
+            justify-content: flex-end;
+        }
+
         .agent-controls {
             padding: 1rem;
             border-top: 1px solid var(--tblr-border-color);
@@ -301,6 +454,24 @@
 
         <!-- Agent Sidebar -->
         <aside class="agent-sidebar">
+            <!-- Execution Plan Section -->
+            <div class="execution-plan-section d-none" id="execution-plan-section">
+                <div class="card-header border-bottom">
+                    <h3 class="card-title">
+                        <i class="ti ti-list-check me-1"></i>
+                        執行計劃
+                    </h3>
+                    <div class="card-actions">
+                        <button class="btn btn-icon btn-sm btn-ghost-secondary" id="collapse-plan-btn" title="收合/展開">
+                            <i class="ti ti-chevron-up"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="execution-plan-content" id="execution-plan-content">
+                    <!-- Plan steps will be inserted here -->
+                </div>
+            </div>
+
             <!-- Agent State/Thought Log -->
             <div class="card-header border-bottom">
                 <h3 class="card-title">Agent 活動日誌</h3>
@@ -325,18 +496,28 @@
                     <textarea id="agent-input" class="form-control" rows="3"
                         placeholder="例如：檢查磁碟空間並刪除 /tmp 下超過 7 天的檔案..."></textarea>
                 </div>
-                <div class="d-flex justify-content-between align-items-center">
-                    <div class="text-muted small">
-                        Model: <span id="model-display">google/gemini-2.0-flash-001</span>
+                <div class="d-flex justify-content-between align-items-center gap-2">
+                    <div class="d-flex align-items-center gap-2">
+                        <div class="form-check form-switch m-0">
+                            <input class="form-check-input" type="checkbox" id="plan-mode-toggle">
+                            <label class="form-check-label text-muted small" for="plan-mode-toggle">
+                                計劃模式
+                            </label>
+                        </div>
+                        <div class="text-muted small">
+                            Model: <span id="model-display">google/gemini-2.0-flash-001</span>
+                        </div>
                     </div>
-                    <button class="btn btn-purple" id="start-agent-btn">
-                        <i class="ti ti-player-play me-1"></i>
-                        執行
-                    </button>
-                    <button class="btn btn-danger d-none" id="stop-agent-btn">
-                        <i class="ti ti-player-stop me-1"></i>
-                        停止
-                    </button>
+                    <div class="btn-group">
+                        <button class="btn btn-purple" id="start-agent-btn">
+                            <i class="ti ti-player-play me-1"></i>
+                            執行
+                        </button>
+                        <button class="btn btn-danger d-none" id="stop-agent-btn">
+                            <i class="ti ti-player-stop me-1"></i>
+                            停止
+                        </button>
+                    </div>
                 </div>
             </div>
         </aside>
@@ -438,6 +619,33 @@
                     </button>
                     <button type="button" class="btn btn-danger" id="confirm-allow-btn">
                         <i class="ti ti-check me-1"></i>確認執行
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Timeout Confirmation Modal -->
+    <div class="modal modal-blur fade" id="timeout-modal" tabindex="-1" role="dialog" aria-hidden="true"
+        data-bs-backdrop="static" data-bs-keyboard="false">
+        <div class="modal-dialog modal-dialog-centered" role="document">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">⏳ 指令執行逾時</h5>
+                </div>
+                <div class="modal-body">
+                    <p>當前指令執行已超過 30 秒，仍未偵測到提示符號（Shell Prompt）。</p>
+                    <p class="text-muted small">這可能是因為指令正在處理大量數據，或者程式進入了互動模式。</p>
+                    <div class="alert alert-info mb-0">
+                        <i class="ti ti-info-circle me-1"></i> 您想繼續等待嗎？
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" id="timeout-abort-btn">
+                        <i class="ti ti-hand-stop me-1"></i>停止等待並終止
+                    </button>
+                    <button type="button" class="btn btn-primary" id="timeout-wait-btn">
+                        <i class="ti ti-clock me-1"></i>繼續等待 30 秒
                     </button>
                 </div>
             </div>
