@@ -249,49 +249,69 @@ RULES:
 - Be extremely concise in your thoughts and answers.`;
 
     if (planMode && !planConfirmed) {
-        // PLANNING PHASE - Force format
+        // PLANNING PHASE - Dynamic
         systemPrompt += `
 
-**CURRENT PHASE: PLANNING**
-You MUST first create an execution plan. Do NOT execute any shell commands yet.
+**CURRENT PHASE: INVESTIGATION & PLANNING**
+You are in the Planning Phase. DO NOT generate a plan immediately if you lack information.
 
-OUTPUT FORMAT (JSON only):
+1. **INVESTIGATE FIRST**: Execute shell commands via the standard output format to gather necessary information (e.g., check disk space, list files, check service status).
+2. **VERIFICATION IS MANDATORY**: You MUST include specific verification steps in your plan to ensure the task was successful.
+3. **SUBMIT PLAN**: Only when you have enough information, output the PLAN using the special format below.
+
+**OPTION 1: EXECUTE INVESTIGATION COMMAND**
+{
+  "thought": "I need to check xxxx first...",
+  "command": "ls -l /tmp",
+  "answer": "Checking current status..."
+}
+
+**OPTION 2: SUBMIT FINAL PLAN (Use this only when ready)**
 {
   "mode": "planning",
-  "thought": "任務分析...",
+  "thought": "I have gathered all info. Here is the plan.",
   "plan": {
-    "title": "任務標題",
+    "title": "Task Title",
     "steps": [
-      {"id": 1, "title": "步驟1", "description": "說明..."},
-      {"id": 2, "title": "步驟2", "description": "說明..."}
+      {"id": 1, "title": "Step 1", "description": "..."},
+      {"id": 2, "title": "Step 2", "description": "..."},
+      {"id": 99, "title": "Verification", "description": "Verify the result..."} 
     ]
   },
   "command": "PLAN",
-  "answer": "我已經為您準備好了執行計劃，請確認後開始執行。"
+  "answer": "I have surveyed the system. Here is the execution plan with verification steps."
 }`;
     } else {
-        // EXECUTION PHASE - Normal format
+        // EXECUTION PHASE
         systemPrompt += `
 
-OUTPUT FORMAT (JSON only):
+**CURRENT PHASE: EXECUTION**
+Output standard JSON format.
+
+**REQUIREMENTS:**
+1. **EXECUTE**: Follow the confirmed plan strictly.
+2. **REPORT**: When the task is finished (command: "DONE"), your "answer" field MUST be a **Comprehensive Execution Report**.
+   - Summarize what was done.
+   - Confirm the verification results.
+   - List any side effects or remaining issues.
+
+OUTPUT FORMAT:
 {
-  "thought": "分析...",
-  "command": "shell 指令",
-  "answer": "說明...",
-  "stepId": 123 (僅在執行計劃模式時包含此欄位)
+  "thought": "Executing step...",
+  "command": "shell command",
+  "answer": "Step result...",
+  "stepId": 123
 }`;
 
         if (planMode && planConfirmed && currentPlan) {
             systemPrompt += `
 
-**CURRENT PHASE: EXECUTING CONFIRMED PLAN**
+**EXECUTING CONFIRMED PLAN**
 Plan Title: ${currentPlan.title}
-Steps: ${JSON.stringify(currentPlan.steps)}
-Completed Steps: ${currentStepIndex}
 Current Step Index: ${currentStepIndex}
+Target Step: ${JSON.stringify(currentPlan.steps[currentStepIndex])}
 
-You are now executing Step ${currentStepIndex + 1}: "${currentPlan.steps[currentStepIndex].title}".
-In your response, you MUST include "stepId": ${currentPlan.steps[currentStepIndex].id}.`;
+You MUST include "stepId": ${currentPlan.steps[currentStepIndex].id} in your response.`;
         }
     }
 
