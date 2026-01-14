@@ -135,28 +135,83 @@
 
         .log-entry {
             margin-bottom: 0.5rem;
-            padding: 0.5rem;
-            border-radius: 4px;
+            padding: 0.5rem 0.75rem;
+            border-radius: 8px;
             background: var(--tblr-bg-surface-secondary);
-            border-left: 3px solid transparent;
             word-break: break-word;
+            max-width: 85%;
         }
 
+        /* User messages - right aligned */
         .log-entry.user {
-            border-left-color: var(--tblr-primary);
+            background: var(--tblr-primary);
+            color: white;
+            margin-left: auto;
+            border-radius: 12px 12px 4px 12px;
         }
 
+        /* Agent messages - left aligned */
         .log-entry.agent {
-            border-left-color: var(--tblr-purple);
+            background: linear-gradient(135deg, rgba(128, 0, 255, 0.15), rgba(128, 0, 255, 0.05));
+            border-left: 3px solid var(--tblr-purple);
+            margin-right: auto;
         }
 
+        /* System messages - centered, subtle */
         .log-entry.system {
-            border-left-color: var(--tblr-gray-500);
+            background: transparent;
+            color: var(--tblr-gray-500);
+            font-size: 0.8rem;
+            text-align: center;
+            max-width: 100%;
+            padding: 0.25rem;
         }
 
         .log-entry.error {
-            border-left-color: var(--tblr-danger);
-            background: rgba(214, 57, 57, 0.1);
+            background: rgba(214, 57, 57, 0.15);
+            border-left: 3px solid var(--tblr-danger);
+            margin-right: auto;
+        }
+
+        /* Thinking/reasoning - collapsible */
+        .log-entry.thinking {
+            background: rgba(100, 100, 100, 0.1);
+            border-left: 2px dashed var(--tblr-gray-500);
+            margin-right: auto;
+            font-size: 0.85rem;
+            opacity: 0.9;
+        }
+
+        .thinking-toggle {
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: var(--tblr-gray-500);
+            font-size: 0.75rem;
+            user-select: none;
+        }
+
+        .thinking-toggle:hover {
+            color: var(--tblr-gray-300);
+        }
+
+        .thinking-toggle .chevron {
+            transition: transform 0.2s;
+        }
+
+        .thinking-toggle.collapsed .chevron {
+            transform: rotate(-90deg);
+        }
+
+        .thinking-content {
+            margin-top: 0.5rem;
+            padding-left: 1rem;
+            border-left: 1px solid var(--tblr-gray-600);
+        }
+
+        .thinking-content.collapsed {
+            display: none;
         }
 
         .agent-controls {
@@ -316,6 +371,35 @@
                 <div class="modal-footer">
                     <button type="button" class="btn btn-link link-secondary" data-bs-dismiss="modal">取消</button>
                     <button type="button" class="btn btn-primary" id="credential-submit-btn">確定</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Dangerous Command Confirmation Modal -->
+    <div class="modal modal-blur fade" id="confirm-modal" tabindex="-1" role="dialog" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered" role="document">
+            <div class="modal-content border-danger">
+                <div class="modal-header bg-danger text-white">
+                    <h5 class="modal-title">⚠️ 危險操作確認</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"
+                        aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="text-muted mb-2">Agent 準備執行以下高風險指令：</p>
+                    <pre class="bg-dark text-danger p-3 rounded" id="confirm-command"></pre>
+                    <div class="alert alert-warning mb-0">
+                        <i class="ti ti-alert-triangle me-2"></i>
+                        此操作可能會刪除資料或對系統造成不可逆的影響。請確認是否繼續執行。
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" id="confirm-deny-btn">
+                        <i class="ti ti-x me-1"></i>拒絕執行
+                    </button>
+                    <button type="button" class="btn btn-danger" id="confirm-allow-btn">
+                        <i class="ti ti-check me-1"></i>確認執行
+                    </button>
                 </div>
             </div>
         </div>

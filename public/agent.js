@@ -33,6 +33,10 @@ const credentialLabel = document.getElementById('credential-label');
 const credentialInput = document.getElementById('credential-input');
 const credentialHint = document.getElementById('credential-hint');
 const credentialSubmitBtn = document.getElementById('credential-submit-btn');
+const confirmModalEl = document.getElementById('confirm-modal');
+const confirmCommandEl = document.getElementById('confirm-command');
+const confirmAllowBtn = document.getElementById('confirm-allow-btn');
+const confirmDenyBtn = document.getElementById('confirm-deny-btn');
 
 // --- State ---
 let term;
@@ -217,7 +221,7 @@ Turn 3: {"thought": "Cleanup complete", "command": "DONE", "answer": "Removed 15
     let currentOutput = "Session Started. Waiting for command.";
 
     try {
-        const maxTurns = 20;
+        const maxTurns = 30;
         for (let turn = 0; turn < maxTurns; turn++) {
             if (signal.aborted) break;
 
@@ -265,11 +269,11 @@ Generate your next move.
                 break;
             }
 
-            addLog('agent', `💭 ${plan.thought}`);
+            addLog('thinking', plan.thought);
 
             // Display answer if provided
             if (plan.answer) {
-                addLog('agent', `📋 ${plan.answer}`);
+                addLog('agent', plan.answer);
             }
 
             if (plan.command === 'DONE') {
@@ -341,8 +345,118 @@ async function callOpenRouter(messages, signal) {
     }
 }
 
+// Detect dangerous/destructive commands
+function isDangerousCommand(command) {
+    const dangerousPatterns = [
+        // Delete operations
+        /\brm\s+(-[rRfF]+\s+)?[\/\w]/,          // rm, rm -rf
+        /\brmdir\b/,                              // rmdir
+        /\bunlink\b/,                             // unlink
+
+        // Format/partition operations
+        /\bmkfs\b/,                               // mkfs
+        /\bfdisk\b/,                              // fdisk
+        /\bparted\b/,                             // parted
+        /\bdd\s+.*of=/,                           // dd write operations
+
+        // System modification
+        /\bchmod\s+[0-7]*[0-7][0-7][0-7]/,        // chmod with octal
+        /\bchown\b/,                              // chown
+        /\bchgrp\b/,                              // chgrp
+
+        // Service/system control
+        /\bsystemctl\s+(stop|disable|mask|restart)/,  // systemctl dangerous ops
+        /\bservice\s+\w+\s+(stop|restart)/,      // service stop/restart
+        /\breboot\b/,                             // reboot
+        /\bshutdown\b/,                           // shutdown
+        /\bhalt\b/,                               // halt
+        /\bpoweroff\b/,                           // poweroff
+
+        // Package management (can break system)
+        /\bapt(-get)?\s+(remove|purge|autoremove)/,  // apt remove
+        /\byum\s+(remove|erase)/,                 // yum remove
+        /\bdnf\s+(remove|erase)/,                 // dnf remove
+        /\bpacman\s+-R/,                          // pacman remove
+
+        // Database operations
+        /\bDROP\s+(DATABASE|TABLE|INDEX)/i,       // SQL DROP
+        /\bDELETE\s+FROM/i,                       // SQL DELETE
+        /\bTRUNCATE\b/i,                          // SQL TRUNCATE
+
+        // User/group management
+        /\buserdel\b/,                            // userdel
+        /\bgroupdel\b/,                           // groupdel
+        /\bpasswd\b/,                             // passwd
+
+        // Network
+        /\biptables\s+-[FXZ]/,                    // iptables flush
+        /\bufw\s+(disable|reset)/,                // ufw disable
+
+        // Kill processes
+        /\bkill\s+-9/,                            // kill -9
+        /\bkillall\b/,                            // killall
+        /\bpkill\b/,                              // pkill
+
+        // Write to important locations
+        />\s*\/etc\//,                            // write to /etc
+        />\s*\/boot\//,                           // write to /boot
+
+        // Dangerous pipes
+        /\|\s*sh\b/,                              // pipe to shell
+        /\|\s*bash\b/,                            // pipe to bash
+    ];
+
+    return dangerousPatterns.some(pattern => pattern.test(command));
+}
+
+// Ask user to confirm dangerous command
+function confirmDangerousCommand(command) {
+    return new Promise((resolve) => {
+        confirmCommandEl.textContent = command;
+
+        const handleAllow = () => {
+            cleanup();
+            hideModal(confirmModalEl);
+            resolve(true);
+        };
+
+        const handleDeny = () => {
+            cleanup();
+            hideModal(confirmModalEl);
+            resolve(false);
+        };
+
+        const cleanup = () => {
+            confirmAllowBtn.removeEventListener('click', handleAllow);
+            confirmDenyBtn.removeEventListener('click', handleDeny);
+            confirmModalEl.querySelectorAll('[data-bs-dismiss="modal"]').forEach(btn => {
+                btn.removeEventListener('click', handleDeny);
+            });
+        };
+
+        confirmAllowBtn.addEventListener('click', handleAllow);
+        confirmDenyBtn.addEventListener('click', handleDeny);
+        confirmModalEl.querySelectorAll('[data-bs-dismiss="modal"]').forEach(btn => {
+            btn.addEventListener('click', handleDeny);
+        });
+
+        showModal(confirmModalEl);
+    });
+}
+
 async function executeCommand(command) {
     if (!socket || !socket.connected) throw new Error('Socket disconnected');
+
+    // Check for dangerous commands
+    if (isDangerousCommand(command)) {
+        addLog('system', '⚠️ 偵測到高風險指令，等待使用者確認...');
+        const confirmed = await confirmDangerousCommand(command);
+        if (!confirmed) {
+            addLog('system', '❌ 使用者拒絕執行該指令');
+            throw new Error('使用者拒絕執行危險指令');
+        }
+        addLog('system', '✅ 使用者已確認執行');
+    }
 
     // Send command
     socket.emit('data', command + '\n');
@@ -430,21 +544,43 @@ function addLog(type, message) {
     const div = document.createElement('div');
     div.className = `log-entry ${type}`;
 
-    // Parse markdown for agent messages
-    let content;
-    if (type === 'agent' && typeof marked !== 'undefined') {
-        // Configure marked to open links in new tab
-        const renderer = new marked.Renderer();
-        renderer.link = function (href, title, text) {
-            const titleAttr = title ? ` title="${title}"` : '';
-            return `<a href="${href}"${titleAttr} target="_blank" rel="noopener noreferrer">${text}</a>`;
-        };
-        content = marked.parse(message, { renderer });
+    // Configure marked to open links in new tab
+    const getMarkedContent = (text) => {
+        if (typeof marked !== 'undefined') {
+            const renderer = new marked.Renderer();
+            renderer.link = function (href, title, text) {
+                const titleAttr = title ? ` title="${title}"` : '';
+                return `<a href="${href}"${titleAttr} target="_blank" rel="noopener noreferrer">${text}</a>`;
+            };
+            return marked.parse(text, { renderer });
+        }
+        return escapeHtml(text);
+    };
+
+    if (type === 'user') {
+        // User message - simple, no label
+        div.innerHTML = `<div class="log-content">${escapeHtml(message)}</div>`;
+    } else if (type === 'thinking') {
+        // Thinking message - collapsible
+        const id = 'thinking-' + Date.now();
+        div.innerHTML = `
+            <div class="thinking-toggle collapsed" onclick="this.classList.toggle('collapsed'); document.getElementById('${id}').classList.toggle('collapsed');">
+                <span class="chevron">▼</span>
+                <span>💭 AI 思考過程</span>
+            </div>
+            <div id="${id}" class="thinking-content collapsed log-content">${getMarkedContent(message)}</div>
+        `;
+    } else if (type === 'agent') {
+        // Agent response - with markdown
+        div.innerHTML = `<div class="log-content">${getMarkedContent(message)}</div>`;
+    } else if (type === 'system') {
+        // System message - minimal
+        div.innerHTML = `<span>${escapeHtml(message)}</span>`;
     } else {
-        content = escapeHtml(message);
+        // Error and others
+        div.innerHTML = `<div class="fw-bold text-uppercase" style="font-size:0.7em; opacity:0.7">${type}</div><div class="log-content">${escapeHtml(message)}</div>`;
     }
 
-    div.innerHTML = `<div class="fw-bold text-uppercase" style="font-size:0.7em; opacity:0.7">${type}</div><div class="log-content">${content}</div>`;
     logsContainer.appendChild(div);
     logsContainer.scrollTop = logsContainer.scrollHeight;
 }
