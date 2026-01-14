@@ -35,6 +35,7 @@ const credentialHint = document.getElementById('credential-hint');
 const credentialSubmitBtn = document.getElementById('credential-submit-btn');
 const confirmModalEl = document.getElementById('confirm-modal');
 const confirmCommandEl = document.getElementById('confirm-command');
+const confirmPurposeEl = document.getElementById('confirm-purpose');
 const confirmAllowBtn = document.getElementById('confirm-allow-btn');
 const confirmDenyBtn = document.getElementById('confirm-deny-btn');
 
@@ -196,24 +197,26 @@ OUTPUT FORMAT (JSON only, no markdown):
 }
 
 RULES:
-- If user asks a QUESTION about the server (e.g., "what is the disk usage?"), gather the info with commands, then provide "answer" with your findings and set "command" to "DONE"
-- If user asks for an ACTION (e.g., "delete old files"), execute commands and report progress
-- NEVER use 'echo' to display answers - use the "answer" field instead
-- When task is complete, set "command": "DONE"
-- Avoid interactive commands (vi, nano, top, less) unless with non-interactive flags
-- Use cat, grep, find, df, free, etc. for inspection
-- Be concise and accurate
+- LANGUAGE: Always communicate in **Traditional Chinese (繁體中文)** for "thought" and "answer" fields.
+- MINIMALISM: Execute only the necessary steps to complete the task. Avoid redundant info-gathering.
+- EFFICIENCY: Combine commands if possible (e.g., using && or ;) to reduce turns.
+- DANGEROUS COMMANDS: If a command affects multiple files or targets (e.g., 'rm', 'chmod'), list all targets clearly in your "thought" field so the user knows exactly what will be affected.
+- If user asks a QUESTION, gather info then provide "answer" and set "command" to "DONE".
+- If user asks for an ACTION, execute and report success.
+- Use the "answer" field for communication; NEVER use 'echo' in commands for talking.
+- When task is complete, set "command": "DONE".
+- Avoid interactive commands (vi, nano, top, less). Use non-interactive alternatives (sed, cat, grep).
+- Be extremely concise in your thoughts and answers.
 
-EXAMPLE - Question:
-User: "How much disk space is available?"
-Turn 1: {"thought": "Need to check disk usage", "command": "df -h"}
-Turn 2: {"thought": "Disk info gathered", "command": "DONE", "answer": "The root partition has 50GB free out of 100GB (50% used)"}
+EXAMPLE - Question (Efficient):
+User: "Which process is using the most memory?"
+Turn 1: {"thought": "檢查目前記憶體佔用最多的程序", "command": "ps -eo pid,ppid,cmd,%mem --sort=-%mem | head -n 2"}
+Turn 2: {"thought": "已找到程序資訊", "command": "DONE", "answer": "目前 'node' 程序 (PID 1234) 佔用了 15% 的記憶體。"}
 
-EXAMPLE - Action:
-User: "Clean up /tmp folder"
-Turn 1: {"thought": "First check what's in /tmp", "command": "ls -la /tmp"}
-Turn 2: {"thought": "Found old files, removing", "command": "rm -rf /tmp/*.log"}
-Turn 3: {"thought": "Cleanup complete", "command": "DONE", "answer": "Removed 15 log files from /tmp"}`
+EXAMPLE - Action (Multiple Targets):
+User: "Delete log1.txt and log2.txt"
+Turn 1: {"thought": "準備刪除以下目標：\\n1. log1.txt\\n2. log2.txt", "command": "rm log1.txt log2.txt"}
+Turn 2: {"thought": "刪除完成", "command": "DONE", "answer": "已成功刪除指定的兩個日誌檔案。"}`
         }
     ];
 
@@ -229,8 +232,8 @@ Turn 3: {"thought": "Cleanup complete", "command": "DONE", "answer": "Removed 15
             const prompt = `
 TASK: ${task}
 
-CURRENT TERMINAL OUTPUT (Last 20 lines):
-${getInternalTerminalContext()}
+CURRENT TERMINAL OUTPUT(Last 20 lines):
+        ${getInternalTerminalContext()}
 
 Generate your next move.
 `;
@@ -284,11 +287,20 @@ Generate your next move.
             if (plan.command && plan.command !== 'DONE') {
                 addLog('agent', `⚡ 執行: ${plan.command}`);
                 // 4. GUI Feedback & Execution
-                await executeCommand(plan.command);
+                await executeCommand(plan.command, plan.thought);
             }
 
-            // Add to history (optional, or just rely on context)
-            // conversationHistory.push({ role: 'assistant', content: content });
+            // Add AI response to conversation history for context continuity
+            conversationHistory.push({
+                role: 'assistant',
+                content: content
+            });
+
+            // Add updated terminal output as user message for next turn
+            conversationHistory.push({
+                role: 'user',
+                content: `Command executed. Current terminal output:\n${getInternalTerminalContext()}`
+            });
         }
 
         // If we reach here without error, task completed successfully
@@ -297,7 +309,7 @@ Generate your next move.
         if (signal.aborted) {
             addLog('system', '⏹️ Agent 已被使用者停止');
         } else {
-            addLog('error', `Agent Error: ${error.message}`);
+            addLog('error', `Agent Error: ${error.message} `);
         }
         // Don't clear input on error so user can retry
     } finally {
@@ -319,7 +331,7 @@ async function callOpenRouter(messages, signal) {
         const response = await fetch(OPENROUTER_API_URL, {
             method: 'POST',
             headers: {
-                'Authorization': `Bearer ${apiKey}`,
+                'Authorization': `Bearer ${apiKey} `,
                 'Content-Type': 'application/json',
                 'HTTP-Referer': window.location.origin,
                 'X-Title': 'WebSSH Agent',
@@ -335,7 +347,7 @@ async function callOpenRouter(messages, signal) {
         if (!response.ok) {
             const errorBody = await response.json().catch(() => ({}));
             const errorMsg = errorBody.error?.message || response.statusText;
-            throw new Error(`API Error (${response.status}): ${errorMsg}`);
+            throw new Error(`API Error(${response.status}): ${errorMsg} `);
         }
 
         return await response.json();
@@ -410,9 +422,10 @@ function isDangerousCommand(command) {
 }
 
 // Ask user to confirm dangerous command
-function confirmDangerousCommand(command) {
+function confirmDangerousCommand(command, purpose) {
     return new Promise((resolve) => {
         confirmCommandEl.textContent = command;
+        confirmPurposeEl.textContent = purpose || '未提供目的';
 
         const handleAllow = () => {
             cleanup();
@@ -444,13 +457,13 @@ function confirmDangerousCommand(command) {
     });
 }
 
-async function executeCommand(command) {
+async function executeCommand(command, purpose) {
     if (!socket || !socket.connected) throw new Error('Socket disconnected');
 
     // Check for dangerous commands
     if (isDangerousCommand(command)) {
         addLog('system', '⚠️ 偵測到高風險指令，等待使用者確認...');
-        const confirmed = await confirmDangerousCommand(command);
+        const confirmed = await confirmDangerousCommand(command, purpose);
         if (!confirmed) {
             addLog('system', '❌ 使用者拒絕執行該指令');
             throw new Error('使用者拒絕執行危險指令');
@@ -609,31 +622,6 @@ function updateAgentUI(running) {
 
 // --- Connection Management ---
 
-function loadConnectionsToModal() {
-    const connections = getStoredConnections();
-    connectionListGroup.innerHTML = '';
-    if (connections.length === 0) {
-        connectionListGroup.innerHTML = '<div class="list-group-item">No connections found. Go to Terminal tab to add one.</div>';
-        return;
-    }
-    connections.forEach(conn => {
-        const item = document.createElement('a');
-        item.href = '#';
-        item.className = 'list-group-item list-group-item-action';
-        item.innerHTML = `
-        <div class="d-flex w-100 justify-content-between">
-          <h5 class="mb-1">${conn.name}</h5>
-          <small>${conn.host}</small>
-        </div>
-     `;
-        item.onclick = (e) => {
-            e.preventDefault();
-            connectTo(conn);
-            hideModal(connectionModalEl);
-        };
-        connectionListGroup.appendChild(item);
-    });
-}
 
 // Helper function to get credential via modal
 function askCredential(title, label, hint = '') {
@@ -684,6 +672,51 @@ function askCredential(title, label, hint = '') {
     });
 }
 
+// Load connections to modal
+function loadConnectionsToModal() {
+    const connections = getStoredConnections();
+    connectionListGroup.innerHTML = '';
+
+    if (connections.length === 0) {
+        connectionListGroup.innerHTML = `
+            <div class="text-center text-muted py-4">
+                <i class="ti ti-server-off mb-2" style="font-size: 2rem;"></i>
+                <p>尚未建立任何連線</p>
+                <p class="small">請至主頁面新增 SSH 連線</p>
+            </div>
+        `;
+        return;
+    }
+
+    connections.forEach(conn => {
+        const item = document.createElement('a');
+        item.className = 'list-group-item list-group-item-action';
+        item.href = '#';
+        item.innerHTML = `
+            <div class="d-flex align-items-center">
+                <span class="avatar avatar-sm me-2 bg-blue-lt">
+                    <i class="ti ti-server"></i>
+                </span>
+                <div class="flex-fill">
+                    <div class="fw-bold">${conn.name}</div>
+                    <div class="text-muted small">${conn.username}@${conn.host}:${conn.port}</div>
+                </div>
+                <span class="badge badge-outline text-${conn.authType === 'password' ? 'blue' : 'green'}">
+                    ${conn.authType === 'password' ? '密碼' : '私鑰'}
+                </span>
+            </div>
+        `;
+
+        item.addEventListener('click', (e) => {
+            e.preventDefault();
+            hideModal(connectionModalEl);
+            connectTo(conn);
+        });
+
+        connectionListGroup.appendChild(item);
+    });
+}
+
 async function connectTo(conn) {
     try {
         addLog('system', `Connecting to ${conn.name}...`);
@@ -692,7 +725,7 @@ async function connectTo(conn) {
         if (conn.authType === 'password') {
             const password = await askCredential(
                 '輸入密碼',
-                `${conn.username}@${conn.host} 的密碼`,
+                `${conn.username} @${conn.host} 的密碼`,
                 ''
             );
             if (password === null) { addLog('system', '已取消連線'); return; }
@@ -757,7 +790,7 @@ async function connectTo(conn) {
         });
 
         socket.on('disconnect', (reason) => {
-            addLog('system', `連線已斷開: ${reason}`);
+            addLog('system', `連線已斷開: ${reason} `);
             statusDot.className = 'status-indicator-dot';
             statusText.textContent = 'Disconnected';
             currentSessionId = null;
@@ -799,20 +832,34 @@ saveApiKeyBtn.addEventListener('click', () => {
 });
 // Manual Modal Handling
 function showModal(modalEl) {
-    modalEl.classList.add('show', 'd-block');
+    modalEl.style.display = 'block';
+    modalEl.classList.add('show');
+    modalEl.setAttribute('aria-modal', 'true');
+    modalEl.removeAttribute('aria-hidden');
+
     const backdrop = document.createElement('div');
     backdrop.className = 'modal-backdrop fade show';
     backdrop.id = modalEl.id + '-backdrop';
     document.body.appendChild(backdrop);
+    document.body.classList.add('modal-open');
 
     // Close on backdrop click (if not static)
     backdrop.addEventListener('click', () => hideModal(modalEl));
 }
 
 function hideModal(modalEl) {
-    modalEl.classList.remove('show', 'd-block');
+    modalEl.style.display = 'none';
+    modalEl.classList.remove('show');
+    modalEl.setAttribute('aria-hidden', 'true');
+    modalEl.removeAttribute('aria-modal');
+
     const backdrop = document.getElementById(modalEl.id + '-backdrop');
     if (backdrop) backdrop.remove();
+
+    // Only remove modal-open if no other modals are open
+    if (!document.querySelector('.modal.show')) {
+        document.body.classList.remove('modal-open');
+    }
 }
 
 // Bind Close Buttons

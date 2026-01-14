@@ -386,7 +386,11 @@
                         aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
-                    <p class="text-muted mb-2">Agent 準備執行以下高風險指令：</p>
+                    <div class="mb-3">
+                        <label class="form-label text-muted">執行目的：</label>
+                        <div class="p-2 border rounded bg-light" id="confirm-purpose"></div>
+                    </div>
+                    <p class="text-muted mb-2">準備執行之指令：</p>
                     <pre class="bg-dark text-danger p-3 rounded" id="confirm-command"></pre>
                     <div class="alert alert-warning mb-0">
                         <i class="ti ti-alert-triangle me-2"></i>
