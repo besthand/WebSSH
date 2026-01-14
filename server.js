@@ -29,16 +29,65 @@ const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
   : DEFAULT_ALLOWED_ORIGINS;
 
 function isOriginAllowed(origin) {
-  if (ALLOW_ANY_ORIGIN || !origin) {
+  // Allow requests with no origin (like curl, Postman, same-origin)
+  if (!origin) {
+    console.log('[cors] allowing request with no origin header');
     return true;
   }
-  return ALLOWED_ORIGINS.includes(origin);
+
+  // Allow all origins if explicitly configured
+  if (ALLOW_ANY_ORIGIN) {
+    console.log('[cors] allowing origin (ALLOW_ANY_ORIGIN=true):', origin);
+    return true;
+  }
+
+  // Check explicit allowed origins list
+  if (ALLOWED_ORIGINS.includes(origin)) {
+    console.log('[cors] allowing origin (in allowed list):', origin);
+    return true;
+  }
+
+  // In production, allow same-origin requests
+  // This handles cases where the app is deployed to Railway, Vercel, etc.
+  try {
+    const originUrl = new URL(origin);
+    const requestHost = originUrl.host;
+
+    // If PUBLIC_URL is set (common in production), check against it
+    if (process.env.PUBLIC_URL) {
+      const publicUrl = new URL(process.env.PUBLIC_URL);
+      if (requestHost === publicUrl.host) {
+        console.log('[cors] allowing origin (matches PUBLIC_URL):', origin);
+        return true;
+      }
+    }
+
+    // Allow Railway deployment URLs
+    if (requestHost.endsWith('.railway.app') || requestHost.endsWith('.up.railway.app')) {
+      console.log('[cors] allowing origin (Railway domain):', origin);
+      return true;
+    }
+
+    // Allow common deployment platforms
+    if (requestHost.endsWith('.vercel.app') ||
+      requestHost.endsWith('.netlify.app') ||
+      requestHost.endsWith('.render.com')) {
+      console.log('[cors] allowing origin (trusted platform):', origin);
+      return true;
+    }
+  } catch (e) {
+    console.warn('[cors] invalid origin URL:', origin);
+  }
+
+  console.warn('[cors] REJECTING origin:', origin);
+  return false;
 }
 
 const corsOriginHandler = (origin, callback) => {
   if (isOriginAllowed(origin)) {
     return callback(null, true);
   }
+  console.error('[cors] Origin not allowed:', origin);
   return callback(new Error('Origin not allowed by CORS policy'));
 };
 
