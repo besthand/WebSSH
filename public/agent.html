@@ -41,6 +41,8 @@
             min-width: 0;
             display: flex;
             flex-direction: column;
+            overflow: hidden;
+            min-height: 0;
         }
 
         .agent-sidebar {
@@ -55,26 +57,59 @@
 
         .terminal-wrapper {
             position: absolute;
-            top: 8px;
-            left: 8px;
-            right: 8px;
-            bottom: 8px;
-            height: auto !important;
-            margin-bottom: 0;
-            padding: 0;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            margin: 0;
+            padding: 8px;
             background-color: #05070d;
-            overflow: hidden;
             border-radius: 4px;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
         }
 
         /* Ensure xterm fits properly */
         .terminal-wrapper .xterm {
-            height: 100%;
-            padding: 8px;
+            width: 100% !important;
+            height: 100% !important;
+            padding: 0;
         }
 
         .terminal-wrapper .xterm-viewport {
-            overflow-y: auto !important;
+            overflow-y: scroll !important;
+            scrollbar-width: thin;
+        }
+
+        /* Add minimal bottom padding to ensure last line is visible */
+        .terminal-wrapper .xterm-screen {
+            padding-bottom: 1em !important;
+        }
+
+        /* Ensure rows container doesn't clip last row */
+        .terminal-wrapper .xterm-rows {
+            /* Don't use fixed height, let it grow naturally */
+            height: auto !important;
+            min-height: 100%;
+        }
+
+        /* Ensure each row is fully visible */
+        .terminal-wrapper .xterm-rows>div {
+            /* Prevent last row from being clipped */
+            margin-bottom: 0;
+            line-height: 1.2;
+        }
+
+        /* Ensure card fills available space correctly */
+        .agent-terminal-area .card {
+            min-height: 0;
+            flex: 1;
+        }
+
+        .agent-terminal-area .card-body {
+            min-height: 0;
+            overflow: hidden;
         }
 
         .logs-container {

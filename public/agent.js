@@ -83,6 +83,12 @@ function initView() {
     fitAddon.fit();
     console.log('[agent] Terminal fitted to:', term.cols, term.rows);
 
+    // Fit again after a short delay to ensure proper sizing
+    setTimeout(() => {
+        fitAddon.fit();
+        console.log('[agent] Terminal re-fitted to:', term.cols, term.rows);
+    }, 100);
+
     window.addEventListener('resize', () => {
         fitAddon.fit();
         emitResize();
